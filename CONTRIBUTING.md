@@ -6,6 +6,18 @@ Use Go 1.25 or newer. The supported development and Wasm build toolchain is
 pinned in `.go-version`; golangci-lint is pinned in
 `.golangci-lint-version`.
 
+Install [prek](https://github.com/j178/prek), then enable the repository's
+pre-commit hook:
+
+```sh
+prek install
+```
+
+The hook rebuilds the embedded Wasm guest when staged Go sources, module
+metadata, build settings, or guest artifacts change. If the rebuild updates
+the guest, stage `internal/guestblob/securejsonnet.wasm` and its `.sha256`
+file, then commit again.
+
 Before sending a change, run:
 
 ```sh

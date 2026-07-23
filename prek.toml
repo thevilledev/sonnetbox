@@ -1,0 +1,13 @@
+minimum_prek_version = "0.3.2"
+
+[[repos]]
+repo = "local"
+
+[[repos.hooks]]
+id = "regenerate-wasm"
+name = "regenerate embedded WASM"
+language = "system"
+entry = "make wasm"
+files = '^(?:.*\.go|go\.(?:mod|sum)|\.go-version|Makefile|internal/guestblob/securejsonnet\.wasm(?:\.sha256)?)$'
+pass_filenames = false
+stages = ["pre-commit"]
