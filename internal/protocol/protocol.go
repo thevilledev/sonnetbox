@@ -78,6 +78,8 @@ type CapabilityResponse struct {
 type GuestError struct {
 	Kind    string `json:"kind"`
 	Message string `json:"message"`
+	Limit   uint64 `json:"limit,omitempty"`
+	Actual  uint64 `json:"actual,omitempty"`
 }
 
 func Pack(status, length uint32) uint64 {

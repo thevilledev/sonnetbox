@@ -1007,10 +1007,18 @@ func guestStatusError(status uint32, payload []byte, config EngineConfig) error 
 	case protocol.EvalHostError:
 		return &ABIError{Err: fmt.Errorf("guest reported an unclassified host error: %w", cause)}
 	case protocol.EvalLimit:
+		limit := guest.Limit
+		actual := guest.Actual
+		if limit == 0 {
+			limit = uint64(config.MaxOutputBytes)
+		}
+		if actual == 0 {
+			actual = limit + 1
+		}
 		return &LimitError{
 			Resource: guest.Kind,
-			Limit:    uint64(config.MaxOutputBytes),
-			Actual:   uint64(config.MaxOutputBytes) + 1,
+			Limit:    limit,
+			Actual:   actual,
 			Err:      cause,
 		}
 	case protocol.EvalInternal:

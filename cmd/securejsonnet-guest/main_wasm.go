@@ -146,6 +146,10 @@ func evaluate() (status uint32) {
 
 	output, err := vm.EvaluateAnonymousSnippet(req.Filename, req.Source)
 	if err != nil {
+		if bridge.localLimit != nil {
+			setGuestError(*bridge.localLimit)
+			return protocol.EvalLimit
+		}
 		if bridge.lastStatus != protocol.HostOK {
 			setError("host", err.Error())
 			return protocol.EvalHostError
@@ -154,7 +158,12 @@ func evaluate() (status uint32) {
 		return protocol.EvalJsonnetError
 	}
 	if uint64(len(output)) > uint64(req.Limits.MaxOutputBytes) {
-		setError("output", fmt.Sprintf("output is %d bytes; limit is %d", len(output), req.Limits.MaxOutputBytes))
+		setGuestError(protocol.GuestError{
+			Kind:    "output",
+			Message: fmt.Sprintf("output is %d bytes; limit is %d", len(output), req.Limits.MaxOutputBytes),
+			Limit:   uint64(req.Limits.MaxOutputBytes),
+			Actual:  uint64(len(output)),
+		})
 		return protocol.EvalLimit
 	}
 	result = []byte(output)
@@ -186,6 +195,7 @@ type hostBridge struct {
 	response    []byte
 	imports     map[string]importResult
 	lastStatus  uint32
+	localLimit  *protocol.GuestError
 }
 
 func (b *hostBridge) Import(importedFrom, importedPath string) (jsonnet.Contents, string, error) {
@@ -253,6 +263,13 @@ func (b *hostBridge) callCapability(name string, args []any) (any, error) {
 
 func (b *hostBridge) callHost(operation uint32, payload []byte) ([]byte, uint32, error) {
 	if len(payload) == 0 || uint64(len(payload)) > uint64(b.maxRequest) {
+		b.lastStatus = protocol.HostLimit
+		b.localLimit = &protocol.GuestError{
+			Kind:    "host request bytes",
+			Message: fmt.Sprintf("host request is %d bytes; limit is %d", len(payload), b.maxRequest),
+			Limit:   uint64(b.maxRequest),
+			Actual:  uint64(len(payload)),
+		}
 		return nil, protocol.HostLimit, errors.New("host request limit exceeded")
 	}
 	if b.response == nil {
@@ -283,10 +300,16 @@ func (b *hostBridge) callHost(operation uint32, payload []byte) ([]byte, uint32,
 }
 
 func setError(kind, message string) {
-	kind = truncateUTF8(kind, 64)
-	message = truncateUTF8(message, maxErrorBytes)
+	setGuestError(protocol.GuestError{Kind: kind, Message: message})
+}
+
+func setGuestError(guestError protocol.GuestError) {
+	guestError.Kind = truncateUTF8(guestError.Kind, 64)
+	guestError.Message = truncateUTF8(guestError.Message, maxErrorBytes)
+	message := guestError.Message
 	encode := func(message string) ([]byte, error) {
-		return json.Marshal(protocol.GuestError{Kind: kind, Message: message})
+		guestError.Message = message
+		return json.Marshal(guestError)
 	}
 	encoded, err := encode(message)
 	if err == nil && len(encoded) <= resultLimit && len(encoded) <= math.MaxUint32 {

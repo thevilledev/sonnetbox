@@ -62,6 +62,26 @@ func TestABIConstants(t *testing.T) {
 	}
 }
 
+func TestGuestErrorLimitMetadata(t *testing.T) {
+	want := GuestError{
+		Kind:    "host request bytes",
+		Message: "request exceeds limit",
+		Limit:   1024,
+		Actual:  2048,
+	}
+	payload, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got GuestError
+	if err := DecodeJSON(payload, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("guest error = %#v, want %#v", got, want)
+	}
+}
+
 func FuzzDecodeImportResponse(f *testing.F) {
 	f.Add([]byte(`{"canonical":"lib/data.jsonnet","content_base64":"AAEC/w=="}`))
 	f.Add([]byte{})

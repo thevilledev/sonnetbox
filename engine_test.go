@@ -330,6 +330,30 @@ func TestCapabilityLimitsAndCancellation(t *testing.T) {
 		t.Fatalf("expected host response limit, got %T: %v", err, err)
 	}
 
+	engine = newTestEngine(t, EngineConfig{MaxHostRequestBytes: 1024})
+	var called atomic.Bool
+	_, err = engine.Evaluate(context.Background(), Request{
+		Source: `std.native("large")(std.repeat("x", 2048))`,
+		Capabilities: map[string]Capability{
+			"large": {
+				Params: []string{"value"},
+				Call: func(context.Context, []any) (any, error) {
+					called.Store(true)
+					return nil, nil
+				},
+			},
+		},
+	})
+	if !errors.As(err, &limit) ||
+		limit.Resource != "host request bytes" ||
+		limit.Limit != 1024 ||
+		limit.Actual <= limit.Limit {
+		t.Fatalf("expected guest host-request limit, got %T: %v", err, err)
+	}
+	if called.Load() {
+		t.Fatal("oversized guest request reached capability handler")
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	timer := time.AfterFunc(10*time.Millisecond, cancel)
 	defer timer.Stop()
@@ -363,7 +387,10 @@ func TestSourceAndOutputLimits(t *testing.T) {
 
 	engine = newTestEngine(t, EngineConfig{MaxSourceBytes: 64, MaxOutputBytes: 8})
 	_, err = engine.Evaluate(context.Background(), Request{Source: `"this output is too long"`})
-	if !errors.As(err, &limit) || limit.Resource != "output" {
+	if !errors.As(err, &limit) ||
+		limit.Resource != "output" ||
+		limit.Limit != 8 ||
+		limit.Actual <= limit.Limit {
 		t.Fatalf("expected output limit, got %T: %v", err, err)
 	}
 }
