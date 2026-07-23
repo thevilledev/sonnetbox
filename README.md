@@ -7,7 +7,7 @@ reactor and the pure-Go [wazero](https://wazero.io/) runtime in the host. It
 does not use Cgo, C++, Wasmtime, shared libraries, or go-jsonnet's browser-only
 `js/wasm` artifact.
 
-The module requires Go 1.24.5 or newer because that is go-jsonnet's minimum.
+The module requires Go 1.25.0 or newer because that is wazero's minimum.
 The checked-in WASM guest is built with the current supported toolchain pinned
 in the Makefile.
 
