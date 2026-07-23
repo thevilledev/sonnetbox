@@ -2,6 +2,8 @@ package securejsonnet
 
 import "fmt"
 
+// InvalidRequestError reports an invalid public request, context, or engine
+// configuration.
 type InvalidRequestError struct {
 	Field string
 	Err   error
@@ -15,6 +17,7 @@ func (e *InvalidRequestError) Error() string {
 }
 func (e *InvalidRequestError) Unwrap() error { return e.Err }
 
+// ImportDeniedError reports an import rejected by policy or not found.
 type ImportDeniedError struct {
 	ImportedFrom string
 	ImportedPath string
@@ -26,6 +29,7 @@ func (e *ImportDeniedError) Error() string {
 }
 func (e *ImportDeniedError) Unwrap() error { return e.Err }
 
+// ImportError reports a trusted importer failure.
 type ImportError struct {
 	ImportedFrom string
 	ImportedPath string
@@ -37,6 +41,7 @@ func (e *ImportError) Error() string {
 }
 func (e *ImportError) Unwrap() error { return e.Err }
 
+// CapabilityError reports a trusted capability failure.
 type CapabilityError struct {
 	Name string
 	Err  error
@@ -47,6 +52,7 @@ func (e *CapabilityError) Error() string {
 }
 func (e *CapabilityError) Unwrap() error { return e.Err }
 
+// LimitError reports a configured resource limit.
 type LimitError struct {
 	Resource string
 	Limit    uint64
@@ -62,11 +68,13 @@ func (e *LimitError) Error() string {
 }
 func (e *LimitError) Unwrap() error { return e.Err }
 
+// CancellationError reports evaluation cancellation or deadline expiry.
 type CancellationError struct{ Err error }
 
 func (e *CancellationError) Error() string { return fmt.Sprintf("evaluation canceled: %v", e.Err) }
 func (e *CancellationError) Unwrap() error { return e.Err }
 
+// GuestTrapError reports an unexpected WASM trap.
 type GuestTrapError struct {
 	Operation string
 	Err       error
@@ -77,16 +85,19 @@ func (e *GuestTrapError) Error() string {
 }
 func (e *GuestTrapError) Unwrap() error { return e.Err }
 
+// EvaluationError reports a static or runtime Jsonnet evaluation error.
 type EvaluationError struct{ Err error }
 
 func (e *EvaluationError) Error() string { return fmt.Sprintf("jsonnet evaluation failed: %v", e.Err) }
 func (e *EvaluationError) Unwrap() error { return e.Err }
 
+// ABIError reports a malformed or incompatible guest/host ABI.
 type ABIError struct{ Err error }
 
 func (e *ABIError) Error() string { return fmt.Sprintf("guest ABI error: %v", e.Err) }
 func (e *ABIError) Unwrap() error { return e.Err }
 
+// EngineClosedError reports an evaluation attempted after Engine.Close.
 type EngineClosedError struct{ Err error }
 
 func (e *EngineClosedError) Error() string {
