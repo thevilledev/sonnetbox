@@ -135,6 +135,94 @@ func TestWorkspaceImporterRejectsEscapingSymlink(t *testing.T) {
 	}
 }
 
+func TestImporterValidationCancellationAndClose(t *testing.T) {
+	mapImporter, err := NewMapImporter(map[string][]byte{
+		"value.jsonnet": []byte(`42`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := mapImporter.Import(
+		canceled,
+		"",
+		"value.jsonnet",
+	); !errors.Is(err, context.Canceled) {
+		t.Fatalf("MapImporter.Import() error = %v, want context cancellation", err)
+	}
+
+	if _, err := NewWorkspaceImporter(""); err == nil {
+		t.Fatal("expected an empty workspace root to be rejected")
+	}
+	if _, err := NewWorkspaceImporter(t.TempDir(), nil); err == nil {
+		t.Fatal("expected a nil workspace option to be rejected")
+	}
+	if _, err := NewWorkspaceImporter(
+		t.TempDir(),
+		WithLibraryPaths("../outside"),
+	); err == nil {
+		t.Fatal("expected an escaping library path to be rejected")
+	}
+	if _, err := NewWorkspaceImporter(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Fatal("expected a missing workspace root to be rejected")
+	}
+
+	var uninitialized *WorkspaceImporter
+	if err := uninitialized.Close(); err != nil {
+		t.Fatalf("nil WorkspaceImporter.Close() error = %v", err)
+	}
+	if _, _, err := uninitialized.Import(
+		context.Background(),
+		"",
+		"value.jsonnet",
+	); err == nil {
+		t.Fatal("expected an uninitialized workspace importer to fail")
+	}
+
+	root := t.TempDir()
+	writeTestFile(t, root, "value.jsonnet", `42`)
+	workspace, err := NewWorkspaceImporter(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := workspace.Import(
+		canceled,
+		"",
+		"value.jsonnet",
+	); !errors.Is(err, context.Canceled) {
+		t.Fatalf("WorkspaceImporter.Import() error = %v, want context cancellation", err)
+	}
+	if _, _, err := workspace.Import(
+		context.Background(),
+		"../main.jsonnet",
+		"value.jsonnet",
+	); !errors.Is(err, ErrImportDenied) {
+		t.Fatalf("invalid importing path error = %v, want import denial", err)
+	}
+	if _, _, err := workspace.Import(
+		context.Background(),
+		"",
+		string([]byte{'b', 'a', 'd', 0}),
+	); !errors.Is(err, ErrImportDenied) {
+		t.Fatalf("NUL import path error = %v, want import denial", err)
+	}
+
+	if err := workspace.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := workspace.Close(); err != nil {
+		t.Fatalf("second WorkspaceImporter.Close() error = %v", err)
+	}
+	if _, _, err := workspace.Import(
+		context.Background(),
+		"",
+		"value.jsonnet",
+	); err == nil || errors.Is(err, ErrImportDenied) {
+		t.Fatalf("closed workspace import error = %v, want filesystem error", err)
+	}
+}
+
 func writeTestFile(t *testing.T, root, name, content string) {
 	t.Helper()
 	filename := filepath.Join(root, filepath.FromSlash(name))
