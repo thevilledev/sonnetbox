@@ -3,28 +3,34 @@
 [![CI](https://github.com/thevilledev/wasmnet/actions/workflows/ci.yml/badge.svg)](https://github.com/thevilledev/wasmnet/actions/workflows/ci.yml)
 
 `securejsonnet` evaluates untrusted Jsonnet in a fresh WebAssembly sandbox. It
-uses the pure-Go
-[go-jsonnet](https://github.com/google/go-jsonnet) evaluator inside a Go WASI
-reactor and the pure-Go [wazero](https://wazero.io/) runtime in the host. It
-does not use Cgo, C++, Wasmtime, shared libraries, or go-jsonnet's browser-only
-`js/wasm` artifact.
+embeds [go-jsonnet](https://github.com/google/go-jsonnet) in a Go WASI guest
+and runs that guest with [wazero](https://wazero.io/). Jsonnet receives no
+ambient filesystem, environment, network, arguments, or inherited standard
+streams. The host explicitly supplies imports, pure native capabilities, and
+resource budgets.
 
-The module requires Go 1.25.0 or newer because that is wazero's minimum.
-The checked-in WASM guest is built with the current supported toolchain pinned
-in the Makefile.
+Use the core API for new integrations. Existing go-jsonnet applications can
+start with the opt-in `compat/gojsonnet` package, which keeps the familiar VM
+workflow while adding contexts and an explicit sandbox boundary.
 
-## Example
+The current host API is for Go. C++/libjsonnet applications need a Go service
+or sidecar boundary; there is not yet a C ABI or drop-in `jsonnet` CLI.
 
-The module path is `github.com/thevilledev/wasmnet`, while the imported package
-name is `securejsonnet`:
+The module requires Go 1.25.12 or newer. It uses no Cgo, C++, Wasmtime, shared
+libraries, or go-jsonnet's browser-only `js/wasm` artifact.
+
+## Quick start
+
+The module path is `github.com/thevilledev/wasmnet`; its root package name is
+`securejsonnet`:
 
 ```go
 import securejsonnet "github.com/thevilledev/wasmnet"
-```
 
-```go
-ctx := context.Background()
-engine, err := securejsonnet.NewEngine(ctx, securejsonnet.EngineConfig{})
+engine, err := securejsonnet.NewEngine(
+	context.Background(),
+	securejsonnet.EngineConfig{},
+)
 if err != nil {
 	log.Fatal(err)
 }
@@ -37,8 +43,12 @@ if err != nil {
 	log.Fatal(err)
 }
 
+ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+defer cancel()
+
 result, err := engine.Evaluate(ctx, securejsonnet.Request{
-	Source:   `import "lib/data.jsonnet"`,
+	Filename: "apps/main.jsonnet",
+	Source:   `import "../lib/data.jsonnet"`,
 	Importer: imports,
 })
 if err != nil {
@@ -47,34 +57,62 @@ if err != nil {
 fmt.Print(string(result.Output))
 ```
 
-`EngineConfig` fields are ceilings. Zero values select conservative defaults:
-128 MiB of WASM memory, 256 KiB source and individual imports, 1 MiB output,
-2 MiB cumulative imports, 64 import resolutions, 128 capability calls,
-512 KiB host-call payloads, and 256 Jsonnet stack frames. Invalid values and
-values above the library's hard ceilings are rejected rather than silently
-changed. Memory limits must be multiples of the 64 KiB WASM page size, and
-nonzero host-response limits must be at least 256 bytes.
+Create one long-lived `Engine` per policy profile. It compiles the embedded
+module once, is safe for concurrent evaluation, and creates a fresh guest for
+every request. Do not create an engine per evaluation.
 
-Set `Request.StringOutput` to return a top-level Jsonnet string without JSON
-quoting. Set `Request.OmitTrailingNewline` to disable go-jsonnet's default
-trailing newline.
+For a current go-jsonnet codebase, see [MIGRATING.md](MIGRATING.md) for the
+compatibility contract, before-and-after code, supported API matrix, and
+rollout checklist.
+
+## Evaluation
+
+The three input entry points have deliberately different import behavior:
+
+- `Evaluate` evaluates inline source relative to `Request.Filename`.
+- `EvaluateAnonymous` matches go-jsonnet's anonymous-snippet behavior:
+  `Filename` is diagnostic only and imports start at the importer root.
+- `EvaluateFile` loads the root file through `Request.Importer`; it never opens
+  the path in the guest.
+
+`Request.OutputMode` selects one JSON value, a multi-file object, or a document
+stream. Results are returned in `Result.Output`, `Result.Files`, or
+`Result.Documents`. `StringOutput` unquotes top-level strings, and
+`OmitTrailingNewline` disables go-jsonnet's normal output newline.
+
+External variables, external code, top-level arguments, and top-level code
+are request-scoped. Requests do not share mutable Jsonnet VM state.
 
 ## Imports
 
-The guest always installs a custom importer. It never uses go-jsonnet's
-`FileImporter`. If `Request.Importer` is nil, all imports are denied.
+If `Request.Importer` is nil, all imports are denied. The guest never uses
+go-jsonnet's `FileImporter`.
 
-`NewMapImporter` is the safe default for virtual files. It copies its input and
-only accepts nonempty, canonical, relative UTF-8 paths using `/`. Absolute
-paths, backslashes, empty or dot segments, and all `..` traversal are denied.
-Custom importers are trusted host code, receive the evaluation context, and
-must return stable content for a canonical path. The engine applies the same
-per-import and cumulative byte limits to every importer. Custom importers may
-be called concurrently by separate evaluations.
+`NewMapImporter` is the safest option for an immutable virtual file set.
+`NewWorkspaceImporter` exposes a read-only host directory while preventing
+relative paths and symlinks from escaping it:
 
-Import content crosses the ABI as base64 inside a strict JSON envelope. The
-encoded envelope, including base64 expansion and the canonical path, must fit
-within `MaxHostResponseBytes`.
+```go
+workspace, err := securejsonnet.NewWorkspaceImporter(
+	"./jsonnet",
+	securejsonnet.WithLibraryPaths("vendor", "lib"),
+)
+if err != nil {
+	log.Fatal(err)
+}
+defer workspace.Close()
+```
+
+Library paths follow go-jsonnet `FileImporter` precedence. Virtual paths use
+canonical `/` separators. Normal relative imports such as `./lib.jsonnet` and
+`../shared.libsonnet` work when their resolved path remains inside the virtual
+root. Absolute paths, backslashes, volume-qualified paths, and root escapes
+are denied.
+
+Custom importers are trusted host code. They receive the evaluation context,
+must return stable content for a canonical path, and must be safe for calls
+from concurrent evaluations. The engine applies per-import, cumulative import,
+and host-message byte limits to every importer.
 
 ## Capabilities
 
@@ -91,35 +129,61 @@ Capabilities: map[string]securejsonnet.Capability{
 }
 ```
 
-Jsonnet calls them with `std.native("lookup")("key")`. Arguments and results
-cross the sandbox as JSON-compatible values. Handler panics become typed
-capability errors.
+Jsonnet calls the example with `std.native("lookup")("key")`. Arguments and
+results must be JSON-compatible. Panics and errors become typed capability
+errors.
 
-Capabilities must be pure, deterministic queries. Jsonnet is lazy, so a native
-function may execute zero, one, or multiple times. Effectful operations are
-unsupported. The library cannot prove purity; this is a contract imposed on
-trusted handlers. Handlers may run concurrently in separate evaluations and
-must honor context cancellation.
+Capabilities must be pure, deterministic queries. Jsonnet is lazy, so a
+native function may execute zero, one, or multiple times. Effectful operations
+and exactly-once semantics are unsupported. Handlers are trusted host code,
+may run concurrently across evaluations, and must honor cancellation.
 
-## ABI
+## Budgets and observability
 
-The embedded guest uses ABI version 2. The host writes one bounded JSON
-evaluation request into guest-owned memory and invokes the guest. Guest imports
-are limited to WASI Preview 1 and one function:
+`EngineConfig` defines ceilings for the engine. Zero fields select these
+defaults:
 
-```text
-securejsonnet_host.call(operation, requestPtr, requestLen, responsePtr, responseCapacity) uint64
-```
+| Ceiling | Default |
+| --- | ---: |
+| Guest linear memory | 128 MiB |
+| Source / one import | 256 KiB each |
+| Rendered output | 1 MiB |
+| Cumulative imports | 2 MiB |
+| Import resolutions | 64 |
+| Capability calls | 128 |
+| Host request / response | 512 KiB each |
+| Captured trace | 64 KiB |
+| Jsonnet stack | 256 frames |
+| Concurrent evaluations | 4 |
 
-Operation 1 resolves an import and operation 2 invokes a capability. The high
-32 bits of the result are the status and the low 32 bits are the bytes written.
-Statuses are success, denial, handler failure, limit exceeded, cancellation,
-and malformed request.
+Invalid values and values above the library's hard ceilings are rejected.
+`Request.Limits` can lower every per-evaluation ceiling except memory and
+concurrency; it can never raise the engine policy. Use a context deadline as
+the CPU budget. Evaluations waiting for a concurrency slot also honor
+cancellation.
 
-The guest allocates one bounded response buffer lazily and reuses it during an
-evaluation. The host never calls back into guest allocators. Host callbacks
-copy requests before calling trusted handlers, validate the complete response
-range, and never retain guest-memory views after returning.
+Set `Request.CaptureTrace` to collect bounded `std.trace` output in
+`Result.Trace`. `Result.Stats` reports queue and execution duration, import
+count and bytes, capability calls, trace bytes, and trace truncation. It is
+available on successful evaluations and is host-observed diagnostic data, not
+a billing or deterministic instruction counter.
+
+`Version()` reports the embedded go-jsonnet version and the private
+host/guest ABI version, which is useful in logs and compatibility reports.
+
+## Compatibility contract
+
+The embedded evaluator is go-jsonnet v0.22.0. For successful evaluations on
+the documented compatibility surface and within configured budgets,
+securejsonnet intends to return the same rendered bytes as that version.
+Differential tests cover variables, arguments, native functions, imports,
+traces, single output, multi-file output, and streams.
+
+The contract does not promise identical concrete error types or strings,
+performance, mutable VM behavior, arbitrary newer go-jsonnet behavior, AST
+APIs, a debugger, or unrestricted filesystem imports. Security policy always
+wins over compatibility. See [MIGRATING.md](MIGRATING.md) for the precise
+matrix and known migration work.
 
 ## Security model
 
@@ -129,34 +193,41 @@ trusted. Each evaluation:
 - instantiates and initializes a fresh, uniquely named WASI guest;
 - uses a precompiled module but no shared guest state;
 - validates every ABI function, pointer, length, and integer conversion;
-- exposes no filesystem, environment, arguments, network, or inherited
-  standard streams;
-- applies source, output, import, host-call, capability, stack, and linear
-  memory limits; and
+- exposes no ambient filesystem, environment, arguments, network, or
+  inherited standard streams;
+- applies source, output, import, trace, host-call, capability, stack, linear
+  memory, and concurrency limits; and
 - closes and discards the guest after success, error, cancellation, or trap.
 
-The output byte limit is checked after go-jsonnet has rendered the result
-because go-jsonnet returns a complete string. The linear-memory ceiling bounds
-transient rendering allocations that occur before that check.
+The output limit is checked after go-jsonnet renders the complete result. The
+linear-memory ceiling bounds transient rendering allocations before that
+check.
 
-Wazero has no deterministic instruction-fuel budget. CPU control therefore
-uses the caller's context deadline with `WithCloseOnContextDone(true)`.
-Cancellation terminates guest execution instead of abandoning a goroutine.
-Trusted host handlers run as host Go code and must honor their context; a
-handler that blocks while ignoring cancellation can still block its call.
+Wazero has no deterministic instruction-fuel budget. CPU control uses the
+caller's context deadline with `WithCloseOnContextDone(true)`, which
+terminates guest execution. A trusted host handler that ignores cancellation
+can still block its call.
 
-The sandbox protects the host from adversarial Jsonnet source. It does not
-protect against malicious importers or capability implementations: those are
-ordinary trusted Go code in the host process. Capabilities that perform writes,
-network mutations, or exactly-once effects are unsupported.
+The sandbox protects the host from adversarial Jsonnet, not from malicious
+importers or capabilities running as ordinary Go code. `Engine.Close` is
+idempotent, rejects new work, and aborts active guest calls.
 
-`Engine.Close` is idempotent. It rejects new evaluations and closes the wazero
-runtime, aborting active guest calls.
+## ABI
 
-## Rebuilding the guest
+The embedded guest uses private ABI version 5. The host sends one bounded
+evaluation request to guest-owned memory. Guest-to-host calls use one imported
+function for import resolution and capability invocation. Status values
+distinguish success, denial, handler failure, limits, cancellation, and
+malformed messages.
 
-The embedded reactor is generated with the exact Go version recorded by
-`GO_TOOLCHAIN` in the Makefile:
+The guest exposes bounded result and trace buffers. Host callbacks copy
+requests before invoking trusted handlers, validate complete memory ranges,
+and never retain guest-memory views. The ABI is an internal implementation
+detail and is not a public extension point.
+
+## Rebuilding and development
+
+The embedded reactor is generated with the exact Go version in `.go-version`:
 
 ```sh
 make wasm
@@ -165,14 +236,11 @@ make wasm-check
 
 The build uses `CGO_ENABLED=0`, `GOOS=wasip1`, `GOARCH=wasm`,
 `-buildmode=c-shared`, `-trimpath`, and a cleared build ID. CI rebuilds the
-module and verifies both its bytes and checked-in SHA-256 checksum.
+module and verifies its bytes and checked-in SHA-256 checksum.
 
-## Development
+Run `make check` for formatting, module, lint, coverage, portability, and WASM
+reproducibility checks. `make race` and `make fuzz-smoke` provide the extended
+checks.
 
-The supported development toolchain is pinned in `.go-version`. Run
-`make check` for formatting, module, lint, coverage, portability, and Wasm
-reproducibility checks. Race and fuzz smoke checks are available through
-`make race` and `make fuzz-smoke`.
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the complete local workflow and
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the local workflow and
 [SECURITY.md](SECURITY.md) for private vulnerability reporting.
