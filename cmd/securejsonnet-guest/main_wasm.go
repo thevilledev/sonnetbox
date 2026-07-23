@@ -3,13 +3,13 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math"
 	"runtime"
+	"unicode/utf8"
 	"unsafe"
 
 	jsonnet "github.com/google/go-jsonnet"
@@ -17,19 +17,28 @@ import (
 	"github.com/thevilledev/wasmnet/internal/protocol"
 )
 
-const maxRequestAllocation = 16 << 20
-const maxErrorBytes = 64 << 10
-
-var (
-	request []byte
-	result  []byte
+const (
+	maxRequestAllocation      = 16 << 20
+	maxHostResponseAllocation = 32 << 20
+	maxOutputBytes            = 64 << 20
+	maxStackDepth             = 4096
+	maxErrorBytes             = 64 << 10
 )
 
-//go:wasmimport securejsonnet_host resolve_import
-func resolveImport(requestPtr unsafe.Pointer, requestLen uint32, responsePtr unsafe.Pointer, responseCap uint32) uint64
+var (
+	request     []byte
+	result      []byte
+	resultLimit = maxErrorBytes
+)
 
-//go:wasmimport securejsonnet_host call_capability
-func callCapability(requestPtr unsafe.Pointer, requestLen uint32, responsePtr unsafe.Pointer, responseCap uint32) uint64
+//go:wasmimport securejsonnet_host call
+func hostCall(
+	operation uint32,
+	requestPtr unsafe.Pointer,
+	requestLen uint32,
+	responsePtr unsafe.Pointer,
+	responseCap uint32,
+) uint64
 
 //go:wasmexport securejsonnet_abi_version
 func abiVersion() uint32 {
@@ -40,6 +49,7 @@ func abiVersion() uint32 {
 func requestAlloc(size uint32) uint32 {
 	request = nil
 	result = nil
+	resultLimit = maxErrorBytes
 	if size == 0 || size > maxRequestAllocation {
 		return 0
 	}
@@ -61,16 +71,26 @@ func evaluate() (status uint32) {
 	}
 
 	var req protocol.EvaluationRequest
-	if err := decodeJSON(request, &req); err != nil {
+	if err := protocol.DecodeJSON(request, &req); err != nil {
 		setError("invalid_request", err.Error())
 		return protocol.EvalInvalidRequest
 	}
 	if req.Limits.MaxStack <= 0 ||
+		req.Limits.MaxStack > maxStackDepth ||
+		req.Limits.MaxOutputBytes == 0 ||
+		req.Limits.MaxOutputBytes > maxOutputBytes ||
 		req.Limits.MaxHostRequestBytes == 0 ||
-		req.Limits.MaxHostResponseBytes == 0 {
-		setError("invalid_request", "guest limits must be positive")
+		req.Limits.MaxHostResponseBytes == 0 ||
+		req.Limits.MaxHostRequestBytes > maxRequestAllocation ||
+		req.Limits.MaxHostResponseBytes > maxHostResponseAllocation {
+		setError("invalid_request", "guest limits must be positive and within ABI ceilings")
 		return protocol.EvalInvalidRequest
 	}
+	if uint64(len(request)) > uint64(req.Limits.MaxHostRequestBytes) {
+		setError("invalid_request", "encoded request exceeds the guest request limit")
+		return protocol.EvalInvalidRequest
+	}
+	resultLimit = min(maxErrorBytes, int(req.Limits.MaxHostResponseBytes))
 
 	bridge := &hostBridge{
 		maxRequest:  req.Limits.MaxHostRequestBytes,
@@ -79,6 +99,8 @@ func evaluate() (status uint32) {
 	}
 	vm := jsonnet.MakeVM()
 	vm.MaxStack = req.Limits.MaxStack
+	vm.StringOutput = req.StringOutput
+	vm.OutputNewline = req.OutputNewline
 	vm.Importer(bridge)
 	vm.SetTraceOut(io.Discard)
 	for key, value := range req.ExtVars {
@@ -94,8 +116,22 @@ func evaluate() (status uint32) {
 		vm.TLACode(key, value)
 	}
 	for name, descriptor := range req.Capabilities {
+		if name == "" || !utf8.ValidString(name) {
+			setError("invalid_request", "capability name must be nonempty UTF-8")
+			return protocol.EvalInvalidRequest
+		}
 		params := make(ast.Identifiers, len(descriptor.Params))
+		seen := make(map[string]struct{}, len(descriptor.Params))
 		for i, param := range descriptor.Params {
+			if !isIdentifier(param) {
+				setError("invalid_request", fmt.Sprintf("invalid capability parameter %q", param))
+				return protocol.EvalInvalidRequest
+			}
+			if _, ok := seen[param]; ok {
+				setError("invalid_request", fmt.Sprintf("duplicate capability parameter %q", param))
+				return protocol.EvalInvalidRequest
+			}
+			seen[param] = struct{}{}
 			params[i] = ast.Identifier(param)
 		}
 		capabilityName := name
@@ -147,6 +183,7 @@ type importResult struct {
 type hostBridge struct {
 	maxRequest  uint32
 	maxResponse uint32
+	response    []byte
 	imports     map[string]importResult
 	lastStatus  uint32
 }
@@ -163,21 +200,24 @@ func (b *hostBridge) Import(importedFrom, importedPath string) (jsonnet.Contents
 	if err != nil {
 		return jsonnet.Contents{}, "", err
 	}
-	response, status, err := b.callHost(payload, resolveImport)
+	response, status, err := b.callHost(protocol.OperationResolveImport, payload)
 	if err != nil {
 		b.lastStatus = status
 		cached := importResult{err: err}
 		b.imports[key] = cached
 		return cached.content, cached.foundAt, cached.err
 	}
-	canonical, content, err := protocol.DecodeImportResponse(response)
-	if err != nil {
+	var decoded protocol.ImportResponse
+	if decodeErr := protocol.DecodeJSON(response, &decoded); decodeErr != nil {
 		b.lastStatus = protocol.HostMalformed
-		err = fmt.Errorf("malformed import response: %w", err)
+		err = fmt.Errorf("malformed import response: %w", decodeErr)
+	} else if decoded.Canonical == "" {
+		b.lastStatus = protocol.HostMalformed
+		err = errors.New("malformed import response: canonical path is empty")
 	}
 	cached := importResult{
-		content: jsonnet.MakeContentsRaw(append([]byte(nil), content...)),
-		foundAt: canonical,
+		content: jsonnet.MakeContentsRaw(append([]byte(nil), decoded.Content...)),
+		foundAt: decoded.Canonical,
 		err:     err,
 	}
 	b.imports[key] = cached
@@ -189,39 +229,49 @@ func (b *hostBridge) callCapability(name string, args []any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	response, status, err := b.callHost(payload, callCapability)
+	response, status, err := b.callHost(protocol.OperationCallCapability, payload)
 	if err != nil {
 		b.lastStatus = status
 		return nil, err
 	}
-	var value any
-	if err := decodeJSON(response, &value); err != nil {
+	var decoded protocol.CapabilityResponse
+	if err := protocol.DecodeJSON(response, &decoded); err != nil {
 		b.lastStatus = protocol.HostMalformed
 		return nil, fmt.Errorf("malformed capability response: %w", err)
+	}
+	if len(decoded.Value) == 0 {
+		b.lastStatus = protocol.HostMalformed
+		return nil, errors.New("malformed capability response: value is missing")
+	}
+	var value any
+	if err := json.Unmarshal(decoded.Value, &value); err != nil {
+		b.lastStatus = protocol.HostMalformed
+		return nil, fmt.Errorf("malformed capability value: %w", err)
 	}
 	return value, nil
 }
 
-type hostFunction func(unsafe.Pointer, uint32, unsafe.Pointer, uint32) uint64
-
-func (b *hostBridge) callHost(payload []byte, call hostFunction) ([]byte, uint32, error) {
+func (b *hostBridge) callHost(operation uint32, payload []byte) ([]byte, uint32, error) {
 	if len(payload) == 0 || uint64(len(payload)) > uint64(b.maxRequest) {
 		return nil, protocol.HostLimit, errors.New("host request limit exceeded")
 	}
-	response := make([]byte, int(b.maxResponse))
-	packed := call(
+	if b.response == nil {
+		b.response = make([]byte, int(b.maxResponse))
+	}
+	packed := hostCall(
+		operation,
 		unsafe.Pointer(&payload[0]),
 		uint32(len(payload)),
-		unsafe.Pointer(&response[0]),
-		uint32(len(response)),
+		unsafe.Pointer(&b.response[0]),
+		uint32(len(b.response)),
 	)
 	runtime.KeepAlive(payload)
-	runtime.KeepAlive(response)
+	runtime.KeepAlive(b.response)
 	status, length := protocol.Unpack(packed)
-	if length > uint32(len(response)) {
+	if length > uint32(len(b.response)) {
 		return nil, protocol.HostMalformed, errors.New("host response length exceeds capacity")
 	}
-	body := append([]byte(nil), response[:length]...)
+	body := append([]byte(nil), b.response[:length]...)
 	if status != protocol.HostOK {
 		message := string(body)
 		if message == "" {
@@ -232,30 +282,72 @@ func (b *hostBridge) callHost(payload []byte, call hostFunction) ([]byte, uint32
 	return body, status, nil
 }
 
-func decodeJSON(data []byte, target any) error {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	if err := decoder.Decode(target); err != nil {
-		return err
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return errors.New("unexpected trailing JSON value")
-		}
-		return err
-	}
-	return nil
-}
-
 func setError(kind, message string) {
-	if len(message) > maxErrorBytes {
-		message = message[:maxErrorBytes]
+	kind = truncateUTF8(kind, 64)
+	message = truncateUTF8(message, maxErrorBytes)
+	encode := func(message string) ([]byte, error) {
+		return json.Marshal(protocol.GuestError{Kind: kind, Message: message})
 	}
-	encoded, err := json.Marshal(protocol.GuestError{Kind: kind, Message: message})
-	if err != nil || len(encoded) > math.MaxUint32 {
+	encoded, err := encode(message)
+	if err == nil && len(encoded) <= resultLimit && len(encoded) <= math.MaxUint32 {
+		result = encoded
+		return
+	}
+
+	low, high := 0, len(message)
+	var bounded []byte
+	for low <= high {
+		mid := low + (high-low)/2
+		candidate, candidateErr := encode(truncateUTF8(message, mid))
+		if candidateErr != nil {
+			err = candidateErr
+			break
+		}
+		if len(candidate) <= resultLimit {
+			bounded = candidate
+			low = mid + 1
+		} else {
+			high = mid - 1
+		}
+	}
+	if err != nil || bounded == nil {
 		result = []byte(`{"kind":"internal","message":"could not encode guest error"}`)
 		return
 	}
-	result = encoded
+	result = bounded
+}
+
+func truncateUTF8(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	value = value[:limit]
+	for !utf8.ValidString(value) {
+		value = value[:len(value)-1]
+	}
+	return value
+}
+
+func isIdentifier(value string) bool {
+	if value == "" {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		char := value[i]
+		if i == 0 {
+			if char != '_' && (char < 'A' || char > 'Z') && (char < 'a' || char > 'z') {
+				return false
+			}
+			continue
+		}
+		if char != '_' &&
+			(char < 'A' || char > 'Z') &&
+			(char < 'a' || char > 'z') &&
+			(char < '0' || char > '9') {
+			return false
+		}
+	}
+	return true
 }
 
 func main() {}

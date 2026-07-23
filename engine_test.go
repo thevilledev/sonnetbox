@@ -30,6 +30,11 @@ func TestEvaluateBasicAndJsonnetError(t *testing.T) {
 	if !errors.As(err, &evaluationErr) {
 		t.Fatalf("expected EvaluationError, got %T: %v", err, err)
 	}
+
+	_, err = engine.Evaluate(context.Background(), Request{Source: `local =`})
+	if !errors.As(err, &evaluationErr) {
+		t.Fatalf("expected static EvaluationError, got %T: %v", err, err)
+	}
 }
 
 func TestEvaluateVariablesAndArguments(t *testing.T) {
@@ -50,6 +55,76 @@ func TestEvaluateVariablesAndArguments(t *testing.T) {
 		"tlaVar":  "20",
 		"tlaCode": float64(22),
 	})
+}
+
+func TestStringOutputAndTrailingNewline(t *testing.T) {
+	engine := newTestEngine(t, EngineConfig{})
+	result, err := engine.Evaluate(context.Background(), Request{
+		Source:              `"hello"`,
+		StringOutput:        true,
+		OmitTrailingNewline: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(result.Output) != "hello" {
+		t.Fatalf("unexpected string output %q", result.Output)
+	}
+
+	result, err = engine.Evaluate(context.Background(), Request{
+		Source:       `"hello"`,
+		StringOutput: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(result.Output) != "hello\n" {
+		t.Fatalf("unexpected newline output %q", result.Output)
+	}
+}
+
+func TestEngineConfigValidation(t *testing.T) {
+	got, err := normalizeConfig(EngineConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != defaultConfig {
+		t.Fatalf("defaults = %#v, want %#v", got, defaultConfig)
+	}
+
+	for _, test := range []struct {
+		name   string
+		config EngineConfig
+	}{
+		{
+			name:   "memory alignment",
+			config: EngineConfig{MaxMemoryBytes: wasmPageSize + 1},
+		},
+		{
+			name:   "negative stack",
+			config: EngineConfig{MaxStack: -1},
+		},
+		{
+			name:   "memory ceiling",
+			config: EngineConfig{MaxMemoryBytes: hardCeilings.MaxMemoryBytes + wasmPageSize},
+		},
+		{
+			name:   "request ceiling",
+			config: EngineConfig{MaxHostRequestBytes: hardCeilings.MaxHostRequestBytes + 1},
+		},
+		{
+			name:   "response minimum",
+			config: EngineConfig{MaxHostResponseBytes: minHostResponseSize - 1},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := normalizeConfig(test.config)
+			var invalid *InvalidRequestError
+			if !errors.As(err, &invalid) {
+				t.Fatalf("expected InvalidRequestError, got %T: %v", err, err)
+			}
+		})
+	}
 }
 
 func TestVirtualImportsAndDenials(t *testing.T) {
@@ -90,6 +165,17 @@ func TestVirtualImportsAndDenials(t *testing.T) {
 	var denied *ImportDeniedError
 	if !errors.As(err, &denied) {
 		t.Fatalf("expected missing import denial, got %T: %v", err, err)
+	}
+
+	_, err = engine.Evaluate(context.Background(), Request{
+		Source: `import "panic.jsonnet"`,
+		Importer: importerFunc(func(context.Context, string, string) (string, []byte, error) {
+			panic("boom")
+		}),
+	})
+	var importErr *ImportError
+	if !errors.As(err, &importErr) {
+		t.Fatalf("expected importer panic as ImportError, got %T: %v", err, err)
 	}
 }
 
@@ -160,9 +246,27 @@ func TestCapabilities(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertJSON(t, result.Output, map[string]any{"used": float64(42)})
-	if calls.Load() == 0 {
-		t.Fatal("capability was not called")
+	if calls.Load() != 1 {
+		t.Fatalf("capability calls = %d, want 1; unused binding must stay lazy", calls.Load())
 	}
+
+	result, err = engine.Evaluate(context.Background(), Request{
+		Source: `std.native("identity")({nested: [1, true, null]})`,
+		Capabilities: map[string]Capability{
+			"identity": {
+				Params: []string{"value"},
+				Call: func(_ context.Context, args []any) (any, error) {
+					return args[0], nil
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertJSON(t, result.Output, map[string]any{
+		"nested": []any{float64(1), true, nil},
+	})
 
 	cause := errors.New("handler failed")
 	_, err = engine.Evaluate(context.Background(), Request{
@@ -198,7 +302,7 @@ func TestCapabilities(t *testing.T) {
 func TestCapabilityLimitsAndCancellation(t *testing.T) {
 	engine := newTestEngine(t, EngineConfig{
 		MaxCapabilityCalls:   1,
-		MaxHostResponseBytes: 32,
+		MaxHostResponseBytes: minHostResponseSize,
 	})
 	capability := Capability{
 		Call: func(context.Context, []any) (any, error) { return "ok", nil },
@@ -212,25 +316,26 @@ func TestCapabilityLimitsAndCancellation(t *testing.T) {
 		t.Fatalf("expected capability call limit, got %T: %v", err, err)
 	}
 
-	engine = newTestEngine(t, EngineConfig{MaxHostResponseBytes: 32})
+	engine = newTestEngine(t, EngineConfig{MaxHostResponseBytes: minHostResponseSize})
 	_, err = engine.Evaluate(context.Background(), Request{
 		Source: `std.native("large")()`,
 		Capabilities: map[string]Capability{
 			"large": {Call: func(context.Context, []any) (any, error) {
-				return string(make([]byte, 128)), nil
+				return string(make([]byte, 1024)), nil
 			}},
 		},
 	})
-	if !errors.As(err, &limit) || limit.Resource != "host response" {
+	if !errors.As(err, &limit) || limit.Resource != "capability response bytes" {
 		t.Fatalf("expected host response limit, got %T: %v", err, err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	timer := time.AfterFunc(10*time.Millisecond, cancel)
+	defer timer.Stop()
 	_, err = engine.Evaluate(ctx, Request{
 		Source: `std.native("cancel")()`,
 		Capabilities: map[string]Capability{
 			"cancel": {Call: func(ctx context.Context, _ []any) (any, error) {
-				cancel()
 				<-ctx.Done()
 				return nil, ctx.Err()
 			}},
@@ -351,6 +456,17 @@ func TestClose(t *testing.T) {
 	}
 }
 
+func TestABIVersionMismatch(t *testing.T) {
+	if err := validateABIVersion(protocol.ABIVersion); err != nil {
+		t.Fatalf("current ABI version was rejected: %v", err)
+	}
+	err := validateABIVersion(protocol.ABIVersion - 1)
+	var abiErr *ABIError
+	if !errors.As(err, &abiErr) {
+		t.Fatalf("expected ABIError, got %T: %v", err, err)
+	}
+}
+
 func TestGoldenAgainstNativeGoJsonnet(t *testing.T) {
 	const source = `local f(x) = x * x; {squares: [f(x) for x in std.range(1, 5)]}`
 	native, err := jsonnet.MakeVM().EvaluateAnonymousSnippet("snippet.jsonnet", source)
@@ -375,11 +491,17 @@ func TestMalformedHostPointerAndLength(t *testing.T) {
 	if _, err := readHostRequest(mod, 0, 17, 16); err == nil {
 		t.Fatal("expected request size error")
 	}
-	if packed := writeHostResponse(mod, 65535, 8, protocol.HostOK, []byte("payload")); packed != protocol.Pack(protocol.HostMalformed, 0) {
-		t.Fatalf("unexpected malformed response result: %x", packed)
+	if _, err := readHostRequest(mod, 0, 8, 16); err == nil {
+		t.Fatal("expected zero request pointer error")
 	}
-	if packed := writeHostResponse(mod, 0, 2, protocol.HostOK, []byte("payload")); packed != protocol.Pack(protocol.HostLimit, 0) {
-		t.Fatalf("unexpected oversized response result: %x", packed)
+	if _, err := hostResponseBuffer(mod, 65535, 8, 16); err == nil {
+		t.Fatal("expected out-of-bounds response error")
+	}
+	if _, err := hostResponseBuffer(mod, 1, 17, 16); err == nil {
+		t.Fatal("expected response capacity error")
+	}
+	if _, err := hostResponseBuffer(mod, 0, 8, 16); err == nil {
+		t.Fatal("expected zero response pointer error")
 	}
 	if _, err := readGuestResult(mod, 65535, 8, 16); err == nil {
 		t.Fatal("expected malformed guest result pointer")
@@ -387,19 +509,114 @@ func TestMalformedHostPointerAndLength(t *testing.T) {
 	if _, err := readGuestResult(mod, 0, 17, 16); err == nil {
 		t.Fatal("expected oversized guest result")
 	}
+	if _, err := readGuestResult(mod, 1, 0, 16); err == nil {
+		t.Fatal("expected noncanonical empty result")
+	}
+
+	response := make([]byte, 5)
+	packed := writeHostResponse(response, protocol.HostHandlerFailure, []byte("ééé"))
+	status, length := protocol.Unpack(packed)
+	if status != protocol.HostHandlerFailure || length != 4 || !json.Valid([]byte(`"`+string(response[:length])+`"`)) {
+		t.Fatalf("unexpected truncated UTF-8 response: %d %d %q", status, length, response[:length])
+	}
+	if packed := writeHostResponse(make([]byte, 2), protocol.HostOK, []byte("large")); packed != protocol.Pack(protocol.HostLimit, 0) {
+		t.Fatalf("unexpected oversized success result: %x", packed)
+	}
+}
+
+func TestGenericHostCallDispatchAndValidation(t *testing.T) {
+	mod := wazerotest.NewModule(wazerotest.NewMemory(64))
+	request := []byte(`{"name":"echo","args":[{"nested":[1,true,null]}]}`)
+	const requestPtr = uint32(64)
+	const responsePtr = uint32(1024)
+	const responseCap = uint32(256)
+	if !mod.Memory().Write(requestPtr, request) {
+		t.Fatal("write request")
+	}
+
+	state := &invocationState{
+		config: EngineConfig{
+			MaxHostRequestBytes:  responseCap,
+			MaxHostResponseBytes: responseCap,
+			MaxCapabilityCalls:   1,
+		},
+		request: Request{
+			Capabilities: map[string]Capability{
+				"echo": {
+					Call: func(_ context.Context, args []any) (any, error) {
+						return args[0], nil
+					},
+				},
+			},
+		},
+	}
+	ctx := context.WithValue(context.Background(), invocationKey{}, state)
+	engine := &Engine{}
+	packed := engine.hostCall(
+		ctx,
+		mod,
+		protocol.OperationCallCapability,
+		requestPtr,
+		uint32(len(request)),
+		responsePtr,
+		responseCap,
+	)
+	status, length := protocol.Unpack(packed)
+	if status != protocol.HostOK {
+		t.Fatalf("unexpected host status %d", status)
+	}
+	response, ok := mod.Memory().Read(responsePtr, length)
+	if !ok {
+		t.Fatal("read response")
+	}
+	var decoded protocol.CapabilityResponse
+	if err := protocol.DecodeJSON(response, &decoded); err != nil {
+		t.Fatal(err)
+	}
+
+	badState := &invocationState{config: state.config}
+	badCtx := context.WithValue(context.Background(), invocationKey{}, badState)
+	packed = engine.hostCall(
+		badCtx,
+		mod,
+		99,
+		requestPtr,
+		uint32(len(request)),
+		responsePtr,
+		responseCap,
+	)
+	status, _ = protocol.Unpack(packed)
+	var abiErr *ABIError
+	if status != protocol.HostMalformed || !errors.As(badState.error(), &abiErr) {
+		t.Fatalf("expected malformed operation ABI error, got %d %v", status, badState.error())
+	}
+
+	packed = engine.hostCall(
+		badCtx,
+		mod,
+		protocol.OperationCallCapability,
+		65535,
+		8,
+		responsePtr,
+		responseCap,
+	)
+	status, _ = protocol.Unpack(packed)
+	if status != protocol.HostMalformed {
+		t.Fatalf("expected malformed pointer status, got %d", status)
+	}
 }
 
 func FuzzDecodeHostPayloads(f *testing.F) {
-	f.Add([]byte(`{"imported_from":"","imported_path":"x.jsonnet"}`))
+	f.Add([]byte(`{"from":"","path":"x.jsonnet"}`))
 	f.Add([]byte(`{"name":"query","args":[1,true,null]}`))
 	f.Add([]byte{})
 	f.Fuzz(func(t *testing.T, payload []byte) {
 		var importRequest protocol.ImportRequest
-		_ = decodeJSON(payload, &importRequest)
+		_ = protocol.DecodeJSON(payload, &importRequest)
 		var capabilityRequest protocol.CapabilityRequest
-		_ = decodeJSON(payload, &capabilityRequest)
+		_ = protocol.DecodeJSON(payload, &capabilityRequest)
 		var evaluationRequest protocol.EvaluationRequest
-		_ = decodeJSON(payload, &evaluationRequest)
+		_ = protocol.DecodeJSON(payload, &evaluationRequest)
 	})
 }
 
@@ -434,4 +651,14 @@ func assertJSON(t *testing.T, actual []byte, expected any) {
 	if fmt.Sprintf("%#v", decoded) != fmt.Sprintf("%#v", normalized) {
 		t.Fatalf("JSON mismatch\nwant: %#v\ngot:  %#v", normalized, decoded)
 	}
+}
+
+type importerFunc func(context.Context, string, string) (string, []byte, error)
+
+func (f importerFunc) Import(
+	ctx context.Context,
+	importedFrom string,
+	importedPath string,
+) (string, []byte, error) {
+	return f(ctx, importedFrom, importedPath)
 }

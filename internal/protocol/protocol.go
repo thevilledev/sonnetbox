@@ -1,13 +1,13 @@
 package protocol
 
 import (
-	"encoding/binary"
+	"bytes"
+	"encoding/json"
 	"errors"
-	"fmt"
-	"math"
+	"io"
 )
 
-const ABIVersion uint32 = 1
+const ABIVersion uint32 = 2
 
 const (
 	EvalOK uint32 = iota
@@ -21,10 +21,15 @@ const (
 const (
 	HostOK uint32 = iota
 	HostDenied
+	HostHandlerFailure
 	HostLimit
 	HostCanceled
-	HostHandlerFailure
 	HostMalformed
+)
+
+const (
+	OperationResolveImport  uint32 = 1
+	OperationCallCapability uint32 = 2
 )
 
 type Limits struct {
@@ -39,24 +44,35 @@ type CapabilityDescriptor struct {
 }
 
 type EvaluationRequest struct {
-	Filename     string                          `json:"filename"`
-	Source       string                          `json:"source"`
-	ExtVars      map[string]string               `json:"ext_vars,omitempty"`
-	ExtCode      map[string]string               `json:"ext_code,omitempty"`
-	TLAVars      map[string]string               `json:"tla_vars,omitempty"`
-	TLACode      map[string]string               `json:"tla_code,omitempty"`
-	Capabilities map[string]CapabilityDescriptor `json:"capabilities,omitempty"`
-	Limits       Limits                          `json:"limits"`
+	Filename      string                          `json:"filename"`
+	Source        string                          `json:"source"`
+	ExtVars       map[string]string               `json:"ext_vars,omitempty"`
+	ExtCode       map[string]string               `json:"ext_code,omitempty"`
+	TLAVars       map[string]string               `json:"tla_vars,omitempty"`
+	TLACode       map[string]string               `json:"tla_code,omitempty"`
+	Capabilities  map[string]CapabilityDescriptor `json:"capabilities,omitempty"`
+	StringOutput  bool                            `json:"string_output,omitempty"`
+	OutputNewline bool                            `json:"output_newline"`
+	Limits        Limits                          `json:"limits"`
 }
 
 type ImportRequest struct {
-	ImportedFrom string `json:"imported_from"`
-	ImportedPath string `json:"imported_path"`
+	ImportedFrom string `json:"from"`
+	ImportedPath string `json:"path"`
+}
+
+type ImportResponse struct {
+	Canonical string `json:"canonical"`
+	Content   []byte `json:"content_base64"`
 }
 
 type CapabilityRequest struct {
 	Name string `json:"name"`
 	Args []any  `json:"args"`
+}
+
+type CapabilityResponse struct {
+	Value json.RawMessage `json:"value"`
 }
 
 type GuestError struct {
@@ -72,25 +88,17 @@ func Unpack(v uint64) (status, length uint32) {
 	return uint32(v >> 32), uint32(v)
 }
 
-func EncodeImportResponse(canonical string, content []byte) ([]byte, error) {
-	if uint64(len(canonical))+uint64(len(content))+4 > math.MaxUint32 {
-		return nil, errors.New("import response exceeds uint32")
+func DecodeJSON(data []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
 	}
-	out := make([]byte, 4+len(canonical)+len(content))
-	binary.LittleEndian.PutUint32(out, uint32(len(canonical)))
-	copy(out[4:], canonical)
-	copy(out[4+len(canonical):], content)
-	return out, nil
-}
-
-func DecodeImportResponse(payload []byte) (string, []byte, error) {
-	if len(payload) < 4 {
-		return "", nil, errors.New("import response is shorter than header")
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("unexpected trailing JSON value")
+		}
+		return err
 	}
-	nameLen := binary.LittleEndian.Uint32(payload)
-	if uint64(nameLen) > uint64(len(payload)-4) {
-		return "", nil, fmt.Errorf("canonical path length %d exceeds payload", nameLen)
-	}
-	offset := 4 + int(nameLen)
-	return string(payload[4:offset]), payload[offset:], nil
+	return nil
 }

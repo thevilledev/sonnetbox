@@ -2,38 +2,85 @@ package protocol
 
 import (
 	"bytes"
+	"encoding/json"
 	"testing"
 )
 
 func TestImportResponseRoundTrip(t *testing.T) {
-	content := []byte{0, 1, 2, 255}
-	payload, err := EncodeImportResponse("lib/data.bin", content)
+	want := ImportResponse{
+		Canonical: "lib/data.jsonnet",
+		Content:   []byte{0, 1, 2, 255},
+	}
+	payload, err := json.Marshal(want)
 	if err != nil {
 		t.Fatal(err)
 	}
-	canonical, decoded, err := DecodeImportResponse(payload)
-	if err != nil {
+	var got ImportResponse
+	if err := DecodeJSON(payload, &got); err != nil {
 		t.Fatal(err)
 	}
-	if canonical != "lib/data.bin" || !bytes.Equal(decoded, content) {
-		t.Fatalf("unexpected response: %q %v", canonical, decoded)
+	if got.Canonical != want.Canonical || !bytes.Equal(got.Content, want.Content) {
+		t.Fatalf("unexpected response: %#v", got)
+	}
+}
+
+func TestDecodeJSONRejectsUnknownAndTrailingFields(t *testing.T) {
+	for _, payload := range [][]byte{
+		[]byte(`{"from":"","path":"x","extra":true}`),
+		[]byte(`{"from":"","path":"x"} {}`),
+	} {
+		var request ImportRequest
+		if err := DecodeJSON(payload, &request); err == nil {
+			t.Fatalf("expected %q to be rejected", payload)
+		}
+	}
+}
+
+func TestABIConstants(t *testing.T) {
+	if ABIVersion != 2 {
+		t.Fatalf("ABI version = %d, want 2", ABIVersion)
+	}
+	statuses := []uint32{
+		HostOK,
+		HostDenied,
+		HostHandlerFailure,
+		HostLimit,
+		HostCanceled,
+		HostMalformed,
+	}
+	for want, got := range statuses {
+		if uint32(want) != got {
+			t.Fatalf("host status at index %d = %d", want, got)
+		}
+	}
+	if OperationResolveImport != 1 || OperationCallCapability != 2 {
+		t.Fatalf(
+			"unexpected operations: import=%d capability=%d",
+			OperationResolveImport,
+			OperationCallCapability,
+		)
 	}
 }
 
 func FuzzDecodeImportResponse(f *testing.F) {
-	f.Add([]byte{1, 0, 0, 0, 'a', 'b'})
+	f.Add([]byte(`{"canonical":"lib/data.jsonnet","content_base64":"AAEC/w=="}`))
 	f.Add([]byte{})
 	f.Fuzz(func(t *testing.T, payload []byte) {
-		canonical, content, err := DecodeImportResponse(payload)
-		if err != nil {
+		var response ImportResponse
+		if err := DecodeJSON(payload, &response); err != nil {
 			return
 		}
-		encoded, err := EncodeImportResponse(canonical, content)
+		encoded, err := json.Marshal(response)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !bytes.Equal(encoded, payload) {
-			t.Fatalf("round trip changed payload")
+		var roundTrip ImportResponse
+		if err := DecodeJSON(encoded, &roundTrip); err != nil {
+			t.Fatal(err)
+		}
+		if response.Canonical != roundTrip.Canonical ||
+			!bytes.Equal(response.Content, roundTrip.Content) {
+			t.Fatal("round trip changed response")
 		}
 	})
 }
@@ -44,7 +91,7 @@ func FuzzPack(f *testing.F) {
 	f.Fuzz(func(t *testing.T, status, length uint32) {
 		gotStatus, gotLength := Unpack(Pack(status, length))
 		if gotStatus != status || gotLength != length {
-			t.Fatalf("round trip failed")
+			t.Fatal("round trip failed")
 		}
 	})
 }

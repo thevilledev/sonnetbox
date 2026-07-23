@@ -1,16 +1,16 @@
 package securejsonnet
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"math"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
@@ -19,7 +19,10 @@ import (
 	"github.com/thevilledev/wasmnet/internal/protocol"
 )
 
-const wasmPageSize = uint64(65536)
+const (
+	wasmPageSize        = uint64(65536)
+	minHostResponseSize = uint32(256)
+)
 
 var identifierPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
@@ -46,9 +49,11 @@ var hardCeilings = EngineConfig{
 	MaxTotalImportBytes:  64 << 20,
 	MaxCapabilityCalls:   10000,
 	MaxHostRequestBytes:  16 << 20,
-	MaxHostResponseBytes: 16 << 20,
+	MaxHostResponseBytes: 32 << 20,
 }
 
+// Engine owns a compiled guest module and instantiates a fresh guest for every
+// evaluation.
 type Engine struct {
 	mu       sync.RWMutex
 	closed   bool
@@ -69,11 +74,16 @@ type invocationState struct {
 	lastErr         error
 }
 
+// NewEngine compiles the embedded guest once and prepares a concurrent-safe
+// isolated Jsonnet engine.
 func NewEngine(ctx context.Context, config EngineConfig) (*Engine, error) {
 	if ctx == nil {
 		return nil, &InvalidRequestError{Field: "context", Err: errors.New("context is nil")}
 	}
-	effective := normalizeConfig(config)
+	effective, err := normalizeConfig(config)
+	if err != nil {
+		return nil, err
+	}
 	pages := effective.MaxMemoryBytes / wasmPageSize
 	if pages == 0 || pages > math.MaxUint32 {
 		return nil, &InvalidRequestError{
@@ -104,6 +114,10 @@ func NewEngine(ctx context.Context, config EngineConfig) (*Engine, error) {
 	if err != nil {
 		return nil, &ABIError{Err: fmt.Errorf("compile embedded guest: %w", err)}
 	}
+	if err := validateCompiledModule(compiled); err != nil {
+		_ = compiled.Close(context.Background())
+		return nil, &ABIError{Err: fmt.Errorf("validate embedded guest: %w", err)}
+	}
 	e.compiled = compiled
 
 	probe, err := e.instantiate(ctx)
@@ -115,15 +129,24 @@ func NewEngine(ctx context.Context, config EngineConfig) (*Engine, error) {
 	if err != nil {
 		return nil, &ABIError{Err: err}
 	}
-	if version != protocol.ABIVersion {
-		return nil, &ABIError{
-			Err: fmt.Errorf("version %d does not match host version %d", version, protocol.ABIVersion),
-		}
+	if err := validateABIVersion(version); err != nil {
+		return nil, err
 	}
 	cleanup = false
 	return e, nil
 }
 
+func validateABIVersion(version uint32) error {
+	if version == protocol.ABIVersion {
+		return nil
+	}
+	return &ABIError{
+		Err: fmt.Errorf("version %d does not match host version %d", version, protocol.ABIVersion),
+	}
+}
+
+// Evaluate runs request in a fresh guest instance. It is safe to call
+// concurrently.
 func (e *Engine) Evaluate(ctx context.Context, request Request) (Result, error) {
 	if ctx == nil {
 		return Result{}, &InvalidRequestError{Field: "context", Err: errors.New("context is nil")}
@@ -213,6 +236,8 @@ func (e *Engine) Evaluate(ctx context.Context, request Request) (Result, error) 
 	return Result{}, guestStatusError(status, payload, config)
 }
 
+// Close rejects new evaluations and closes the runtime. It is idempotent and
+// aborts active guest calls.
 func (e *Engine) Close(ctx context.Context) error {
 	if ctx == nil {
 		return &InvalidRequestError{Field: "context", Err: errors.New("context is nil")}
@@ -237,22 +262,29 @@ func (e *Engine) instantiate(ctx context.Context) (api.Module, error) {
 func (e *Engine) instantiateHostModule(ctx context.Context) error {
 	_, err := e.runtime.NewHostModuleBuilder("securejsonnet_host").
 		NewFunctionBuilder().
-		WithFunc(e.resolveImport).
-		Export("resolve_import").
-		NewFunctionBuilder().
-		WithFunc(e.callCapability).
-		Export("call_capability").
+		WithFunc(e.hostCall).
+		Export("call").
 		Instantiate(ctx)
 	return err
 }
 
-func (e *Engine) resolveImport(
+func (e *Engine) hostCall(
 	ctx context.Context,
 	mod api.Module,
-	requestPtr, requestLen, responsePtr, responseCap uint32,
-) uint64 {
+	operation, requestPtr, requestLen, responsePtr, responseCap uint32,
+) (packed uint64) {
 	state, ok := ctx.Value(invocationKey{}).(*invocationState)
 	if !ok || state == nil {
+		return protocol.Pack(protocol.HostMalformed, 0)
+	}
+	response, err := hostResponseBuffer(
+		mod,
+		responsePtr,
+		responseCap,
+		state.config.MaxHostResponseBytes,
+	)
+	if err != nil {
+		state.record(&ABIError{Err: err})
 		return protocol.Pack(protocol.HostMalformed, 0)
 	}
 	raw, err := readHostRequest(mod, requestPtr, requestLen, state.config.MaxHostRequestBytes)
@@ -260,10 +292,73 @@ func (e *Engine) resolveImport(
 		state.record(&ABIError{Err: err})
 		return protocol.Pack(protocol.HostMalformed, 0)
 	}
+
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			var recoveredErr error
+			switch operation {
+			case protocol.OperationResolveImport:
+				recoveredErr = &ImportError{Err: fmt.Errorf("handler panicked: %v", recovered)}
+			case protocol.OperationCallCapability:
+				recoveredErr = &CapabilityError{
+					Name: "<unknown>",
+					Err:  fmt.Errorf("handler panicked: %v", recovered),
+				}
+			default:
+				recoveredErr = &ABIError{Err: fmt.Errorf("host operation %d panicked: %v", operation, recovered)}
+			}
+			state.record(recoveredErr)
+			packed = writeHostResponse(response, protocol.HostHandlerFailure, []byte(recoveredErr.Error()))
+		}
+	}()
+
+	var status uint32
+	var payload []byte
+	var callErr error
+	switch operation {
+	case protocol.OperationResolveImport:
+		status, payload, callErr = e.resolveImport(ctx, state, raw)
+	case protocol.OperationCallCapability:
+		status, payload, callErr = e.callCapability(ctx, state, raw)
+	default:
+		callErr = &ABIError{Err: fmt.Errorf("unknown host operation %d", operation)}
+		status = protocol.HostMalformed
+		payload = []byte(callErr.Error())
+	}
+	if callErr != nil {
+		state.record(callErr)
+	}
+	if len(payload) > len(response) {
+		limit := &LimitError{
+			Resource: "host response capacity",
+			Limit:    uint64(len(response)),
+			Actual:   uint64(len(payload)),
+		}
+		state.record(limit)
+		return writeHostResponse(response, protocol.HostLimit, []byte(limit.Error()))
+	}
+	return writeHostResponse(response, status, payload)
+}
+
+func (e *Engine) resolveImport(
+	ctx context.Context,
+	state *invocationState,
+	raw []byte,
+) (uint32, []byte, error) {
 	var request protocol.ImportRequest
-	if err := decodeJSON(raw, &request); err != nil {
-		state.record(&ABIError{Err: fmt.Errorf("decode import request: %w", err)})
-		return writeHostResponse(mod, responsePtr, responseCap, protocol.HostMalformed, []byte(err.Error()))
+	if err := protocol.DecodeJSON(raw, &request); err != nil {
+		wrapped := &ABIError{Err: fmt.Errorf("decode import request: %w", err)}
+		return protocol.HostMalformed, []byte(wrapped.Error()), wrapped
+	}
+	if request.ImportedPath == "" {
+		wrapped := &ABIError{Err: errors.New("import request path is empty")}
+		return protocol.HostMalformed, []byte(wrapped.Error()), wrapped
+	}
+	if request.ImportedFrom != "" {
+		if err := validateVirtualPath(request.ImportedFrom); err != nil {
+			wrapped := &ABIError{Err: fmt.Errorf("invalid importing path: %w", err)}
+			return protocol.HostMalformed, []byte(wrapped.Error()), wrapped
+		}
 	}
 	if err := validateVirtualPath(request.ImportedPath); err != nil {
 		denied := &ImportDeniedError{
@@ -271,8 +366,7 @@ func (e *Engine) resolveImport(
 			ImportedPath: request.ImportedPath,
 			Err:          err,
 		}
-		state.record(denied)
-		return writeHostResponse(mod, responsePtr, responseCap, protocol.HostDenied, []byte(denied.Error()))
+		return protocol.HostDenied, []byte(denied.Error()), denied
 	}
 
 	state.mu.Lock()
@@ -283,8 +377,7 @@ func (e *Engine) resolveImport(
 			Limit:    uint64(state.config.MaxImports),
 			Actual:   uint64(state.importCalls) + 1,
 		}
-		state.record(limit)
-		return writeHostResponse(mod, responsePtr, responseCap, protocol.HostLimit, []byte(limit.Error()))
+		return protocol.HostLimit, []byte(limit.Error()), limit
 	}
 	state.importCalls++
 	importer := state.request.Importer
@@ -295,15 +388,13 @@ func (e *Engine) resolveImport(
 			ImportedPath: request.ImportedPath,
 			Err:          errImportDenied,
 		}
-		state.record(denied)
-		return writeHostResponse(mod, responsePtr, responseCap, protocol.HostDenied, []byte(denied.Error()))
+		return protocol.HostDenied, []byte(denied.Error()), denied
 	}
 
 	canonical, content, importErr := importer.Import(ctx, request.ImportedFrom, request.ImportedPath)
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		canceled := &CancellationError{Err: ctxErr}
-		state.record(canceled)
-		return writeHostResponse(mod, responsePtr, responseCap, protocol.HostCanceled, []byte(canceled.Error()))
+		return protocol.HostCanceled, []byte(canceled.Error()), canceled
 	}
 	if importErr != nil {
 		var wrapped error
@@ -322,8 +413,7 @@ func (e *Engine) resolveImport(
 				Err:          importErr,
 			}
 		}
-		state.record(wrapped)
-		return writeHostResponse(mod, responsePtr, responseCap, status, []byte(wrapped.Error()))
+		return status, []byte(wrapped.Error()), wrapped
 	}
 	if err := validateVirtualPath(canonical); err != nil {
 		wrapped := &ImportError{
@@ -331,8 +421,7 @@ func (e *Engine) resolveImport(
 			ImportedPath: request.ImportedPath,
 			Err:          fmt.Errorf("invalid canonical path %q: %w", canonical, err),
 		}
-		state.record(wrapped)
-		return writeHostResponse(mod, responsePtr, responseCap, protocol.HostHandlerFailure, []byte(wrapped.Error()))
+		return protocol.HostHandlerFailure, []byte(wrapped.Error()), wrapped
 	}
 	if uint64(len(content)) > uint64(state.config.MaxImportBytes) {
 		limit := &LimitError{
@@ -340,8 +429,7 @@ func (e *Engine) resolveImport(
 			Limit:    uint64(state.config.MaxImportBytes),
 			Actual:   uint64(len(content)),
 		}
-		state.record(limit)
-		return writeHostResponse(mod, responsePtr, responseCap, protocol.HostLimit, []byte(limit.Error()))
+		return protocol.HostLimit, []byte(limit.Error()), limit
 	}
 	state.mu.Lock()
 	nextTotal := state.importBytes + uint64(len(content))
@@ -352,62 +440,48 @@ func (e *Engine) resolveImport(
 			Limit:    state.config.MaxTotalImportBytes,
 			Actual:   nextTotal,
 		}
-		state.record(limit)
-		return writeHostResponse(mod, responsePtr, responseCap, protocol.HostLimit, []byte(limit.Error()))
+		return protocol.HostLimit, []byte(limit.Error()), limit
 	}
 	state.importBytes = nextTotal
 	state.mu.Unlock()
 
-	payload, err := protocol.EncodeImportResponse(canonical, content)
+	content = append([]byte{}, content...)
+	payload, err := json.Marshal(protocol.ImportResponse{
+		Canonical: canonical,
+		Content:   content,
+	})
 	if err != nil {
 		wrapped := &ImportError{
 			ImportedFrom: request.ImportedFrom,
 			ImportedPath: request.ImportedPath,
 			Err:          err,
 		}
-		state.record(wrapped)
-		return writeHostResponse(mod, responsePtr, responseCap, protocol.HostHandlerFailure, []byte(wrapped.Error()))
+		return protocol.HostHandlerFailure, []byte(wrapped.Error()), wrapped
 	}
 	if uint64(len(payload)) > uint64(state.config.MaxHostResponseBytes) {
 		limit := &LimitError{
-			Resource: "host response",
+			Resource: "import response bytes",
 			Limit:    uint64(state.config.MaxHostResponseBytes),
 			Actual:   uint64(len(payload)),
 		}
-		state.record(limit)
-		return writeHostResponse(mod, responsePtr, responseCap, protocol.HostLimit, []byte(limit.Error()))
+		return protocol.HostLimit, []byte(limit.Error()), limit
 	}
-	return writeHostResponse(mod, responsePtr, responseCap, protocol.HostOK, payload)
+	return protocol.HostOK, payload, nil
 }
 
 func (e *Engine) callCapability(
 	ctx context.Context,
-	mod api.Module,
-	requestPtr, requestLen, responsePtr, responseCap uint32,
-) (packed uint64) {
-	state, ok := ctx.Value(invocationKey{}).(*invocationState)
-	if !ok || state == nil {
-		return protocol.Pack(protocol.HostMalformed, 0)
-	}
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			err := &CapabilityError{
-				Name: "<panic>",
-				Err:  fmt.Errorf("handler panicked: %v", recovered),
-			}
-			state.record(err)
-			packed = writeHostResponse(mod, responsePtr, responseCap, protocol.HostHandlerFailure, []byte(err.Error()))
-		}
-	}()
-	raw, err := readHostRequest(mod, requestPtr, requestLen, state.config.MaxHostRequestBytes)
-	if err != nil {
-		state.record(&ABIError{Err: err})
-		return protocol.Pack(protocol.HostMalformed, 0)
-	}
+	state *invocationState,
+	raw []byte,
+) (uint32, []byte, error) {
 	var request protocol.CapabilityRequest
-	if err := decodeJSON(raw, &request); err != nil {
-		state.record(&ABIError{Err: fmt.Errorf("decode capability request: %w", err)})
-		return writeHostResponse(mod, responsePtr, responseCap, protocol.HostMalformed, []byte(err.Error()))
+	if err := protocol.DecodeJSON(raw, &request); err != nil {
+		wrapped := &ABIError{Err: fmt.Errorf("decode capability request: %w", err)}
+		return protocol.HostMalformed, []byte(wrapped.Error()), wrapped
+	}
+	if request.Name == "" {
+		wrapped := &ABIError{Err: errors.New("capability request name is empty")}
+		return protocol.HostMalformed, []byte(wrapped.Error()), wrapped
 	}
 
 	state.mu.Lock()
@@ -418,84 +492,281 @@ func (e *Engine) callCapability(
 			Limit:    uint64(state.config.MaxCapabilityCalls),
 			Actual:   uint64(state.capabilityCalls) + 1,
 		}
-		state.record(limit)
-		return writeHostResponse(mod, responsePtr, responseCap, protocol.HostLimit, []byte(limit.Error()))
+		return protocol.HostLimit, []byte(limit.Error()), limit
 	}
 	state.capabilityCalls++
 	capability, ok := state.request.Capabilities[request.Name]
 	state.mu.Unlock()
 	if !ok {
 		failure := &CapabilityError{Name: request.Name, Err: errors.New("capability is not registered")}
-		state.record(failure)
-		return writeHostResponse(mod, responsePtr, responseCap, protocol.HostDenied, []byte(failure.Error()))
+		return protocol.HostDenied, []byte(failure.Error()), failure
 	}
 
 	value, callErr := capability.Call(ctx, request.Args)
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		canceled := &CancellationError{Err: ctxErr}
-		state.record(canceled)
-		return writeHostResponse(mod, responsePtr, responseCap, protocol.HostCanceled, []byte(canceled.Error()))
+		return protocol.HostCanceled, []byte(canceled.Error()), canceled
 	}
 	if callErr != nil {
 		failure := &CapabilityError{Name: request.Name, Err: callErr}
-		state.record(failure)
-		return writeHostResponse(mod, responsePtr, responseCap, protocol.HostHandlerFailure, []byte(failure.Error()))
+		return protocol.HostHandlerFailure, []byte(failure.Error()), failure
 	}
-	payload, err := json.Marshal(value)
+	encodedValue, err := json.Marshal(value)
 	if err != nil {
 		failure := &CapabilityError{Name: request.Name, Err: fmt.Errorf("result is not JSON-compatible: %w", err)}
-		state.record(failure)
-		return writeHostResponse(mod, responsePtr, responseCap, protocol.HostHandlerFailure, []byte(failure.Error()))
+		return protocol.HostHandlerFailure, []byte(failure.Error()), failure
+	}
+	payload, err := json.Marshal(protocol.CapabilityResponse{Value: encodedValue})
+	if err != nil {
+		failure := &CapabilityError{Name: request.Name, Err: fmt.Errorf("encode result envelope: %w", err)}
+		return protocol.HostHandlerFailure, []byte(failure.Error()), failure
 	}
 	if uint64(len(payload)) > uint64(state.config.MaxHostResponseBytes) {
 		limit := &LimitError{
-			Resource: "host response",
+			Resource: "capability response bytes",
 			Limit:    uint64(state.config.MaxHostResponseBytes),
 			Actual:   uint64(len(payload)),
 		}
-		state.record(limit)
-		return writeHostResponse(mod, responsePtr, responseCap, protocol.HostLimit, []byte(limit.Error()))
+		return protocol.HostLimit, []byte(limit.Error()), limit
 	}
-	return writeHostResponse(mod, responsePtr, responseCap, protocol.HostOK, payload)
+	return protocol.HostOK, payload, nil
 }
 
-func normalizeConfig(input EngineConfig) EngineConfig {
+var allowedWASIImports = map[string]struct{}{
+	"args_get":            {},
+	"args_sizes_get":      {},
+	"clock_time_get":      {},
+	"environ_get":         {},
+	"environ_sizes_get":   {},
+	"fd_close":            {},
+	"fd_fdstat_get":       {},
+	"fd_fdstat_set_flags": {},
+	"fd_filestat_get":     {},
+	"fd_prestat_dir_name": {},
+	"fd_prestat_get":      {},
+	"fd_read":             {},
+	"fd_write":            {},
+	"path_filestat_get":   {},
+	"path_open":           {},
+	"poll_oneoff":         {},
+	"proc_exit":           {},
+	"random_get":          {},
+	"sched_yield":         {},
+}
+
+var requiredGuestExports = map[string]struct {
+	params  []api.ValueType
+	results []api.ValueType
+}{
+	"_initialize":                 {},
+	"securejsonnet_abi_version":   {results: []api.ValueType{api.ValueTypeI32}},
+	"securejsonnet_request_alloc": {params: []api.ValueType{api.ValueTypeI32}, results: []api.ValueType{api.ValueTypeI32}},
+	"securejsonnet_evaluate":      {results: []api.ValueType{api.ValueTypeI32}},
+	"securejsonnet_result_ptr":    {results: []api.ValueType{api.ValueTypeI32}},
+	"securejsonnet_result_len":    {results: []api.ValueType{api.ValueTypeI32}},
+}
+
+func validateCompiledModule(compiled wazero.CompiledModule) error {
+	if len(compiled.ImportedMemories()) != 0 {
+		return errors.New("guest imports memory")
+	}
+	hostCalls := 0
+	for _, definition := range compiled.ImportedFunctions() {
+		moduleName, functionName, ok := definition.Import()
+		if !ok {
+			return fmt.Errorf("function %q is not marked as an import", definition.DebugName())
+		}
+		switch moduleName {
+		case wasi_snapshot_preview1.ModuleName:
+			if _, ok := allowedWASIImports[functionName]; !ok {
+				return fmt.Errorf("guest imports unexpected WASI function %q", functionName)
+			}
+		case "securejsonnet_host":
+			hostCalls++
+			if functionName != "call" {
+				return fmt.Errorf("guest imports unexpected host function %q", functionName)
+			}
+			wantParams := []api.ValueType{
+				api.ValueTypeI32,
+				api.ValueTypeI32,
+				api.ValueTypeI32,
+				api.ValueTypeI32,
+				api.ValueTypeI32,
+			}
+			wantResults := []api.ValueType{api.ValueTypeI64}
+			if !slices.Equal(definition.ParamTypes(), wantParams) ||
+				!slices.Equal(definition.ResultTypes(), wantResults) {
+				return errors.New("securejsonnet_host.call has an unexpected signature")
+			}
+		default:
+			return fmt.Errorf(
+				"guest imports unexpected function %s.%s",
+				moduleName,
+				functionName,
+			)
+		}
+	}
+	if hostCalls != 1 {
+		return fmt.Errorf("guest imports securejsonnet_host.call %d times, want 1", hostCalls)
+	}
+
+	exports := compiled.ExportedFunctions()
+	if len(exports) != len(requiredGuestExports) {
+		return fmt.Errorf("guest exports %d functions, want %d", len(exports), len(requiredGuestExports))
+	}
+	for name, expected := range requiredGuestExports {
+		definition, ok := exports[name]
+		if !ok {
+			return fmt.Errorf("guest is missing function export %q", name)
+		}
+		if !slices.Equal(definition.ParamTypes(), expected.params) ||
+			!slices.Equal(definition.ResultTypes(), expected.results) {
+			return fmt.Errorf("guest export %q has an unexpected signature", name)
+		}
+	}
+	memories := compiled.ExportedMemories()
+	if len(memories) != 1 || memories["memory"] == nil {
+		return errors.New(`guest must export exactly one memory named "memory"`)
+	}
+	return nil
+}
+
+func normalizeConfig(input EngineConfig) (EngineConfig, error) {
 	out := input
-	applyUint64 := func(value *uint64, fallback, ceiling uint64) {
-		if *value == 0 {
-			*value = fallback
-		}
-		if *value > ceiling {
-			*value = ceiling
+	var err error
+	out.MaxMemoryBytes, err = normalizeUnsigned(
+		"MaxMemoryBytes",
+		out.MaxMemoryBytes,
+		defaultConfig.MaxMemoryBytes,
+		hardCeilings.MaxMemoryBytes,
+	)
+	if err != nil {
+		return EngineConfig{}, err
+	}
+	out.MaxSourceBytes, err = normalizeUnsigned(
+		"MaxSourceBytes",
+		out.MaxSourceBytes,
+		defaultConfig.MaxSourceBytes,
+		hardCeilings.MaxSourceBytes,
+	)
+	if err != nil {
+		return EngineConfig{}, err
+	}
+	out.MaxOutputBytes, err = normalizeUnsigned(
+		"MaxOutputBytes",
+		out.MaxOutputBytes,
+		defaultConfig.MaxOutputBytes,
+		hardCeilings.MaxOutputBytes,
+	)
+	if err != nil {
+		return EngineConfig{}, err
+	}
+	out.MaxStack, err = normalizeStack(out.MaxStack)
+	if err != nil {
+		return EngineConfig{}, err
+	}
+	out.MaxImports, err = normalizeUnsigned(
+		"MaxImports",
+		out.MaxImports,
+		defaultConfig.MaxImports,
+		hardCeilings.MaxImports,
+	)
+	if err != nil {
+		return EngineConfig{}, err
+	}
+	out.MaxImportBytes, err = normalizeUnsigned(
+		"MaxImportBytes",
+		out.MaxImportBytes,
+		defaultConfig.MaxImportBytes,
+		hardCeilings.MaxImportBytes,
+	)
+	if err != nil {
+		return EngineConfig{}, err
+	}
+	out.MaxTotalImportBytes, err = normalizeUnsigned(
+		"MaxTotalImportBytes",
+		out.MaxTotalImportBytes,
+		defaultConfig.MaxTotalImportBytes,
+		hardCeilings.MaxTotalImportBytes,
+	)
+	if err != nil {
+		return EngineConfig{}, err
+	}
+	out.MaxCapabilityCalls, err = normalizeUnsigned(
+		"MaxCapabilityCalls",
+		out.MaxCapabilityCalls,
+		defaultConfig.MaxCapabilityCalls,
+		hardCeilings.MaxCapabilityCalls,
+	)
+	if err != nil {
+		return EngineConfig{}, err
+	}
+	out.MaxHostRequestBytes, err = normalizeUnsigned(
+		"MaxHostRequestBytes",
+		out.MaxHostRequestBytes,
+		defaultConfig.MaxHostRequestBytes,
+		hardCeilings.MaxHostRequestBytes,
+	)
+	if err != nil {
+		return EngineConfig{}, err
+	}
+	out.MaxHostResponseBytes, err = normalizeUnsigned(
+		"MaxHostResponseBytes",
+		out.MaxHostResponseBytes,
+		defaultConfig.MaxHostResponseBytes,
+		hardCeilings.MaxHostResponseBytes,
+	)
+	if err != nil {
+		return EngineConfig{}, err
+	}
+	if out.MaxMemoryBytes%wasmPageSize != 0 {
+		return EngineConfig{}, &InvalidRequestError{
+			Field: "EngineConfig.MaxMemoryBytes",
+			Err:   fmt.Errorf("must be a multiple of %d bytes", wasmPageSize),
 		}
 	}
-	applyUint32 := func(value *uint32, fallback, ceiling uint32) {
-		if *value == 0 {
-			*value = fallback
-		}
-		if *value > ceiling {
-			*value = ceiling
+	if out.MaxHostResponseBytes < minHostResponseSize {
+		return EngineConfig{}, &InvalidRequestError{
+			Field: "EngineConfig.MaxHostResponseBytes",
+			Err:   fmt.Errorf("must be at least %d bytes", minHostResponseSize),
 		}
 	}
-	applyInt := func(value *int, fallback, ceiling int) {
-		if *value <= 0 {
-			*value = fallback
-		}
-		if *value > ceiling {
-			*value = ceiling
+	return out, nil
+}
+
+func normalizeUnsigned[T ~uint32 | ~uint64](
+	field string,
+	value, fallback, ceiling T,
+) (T, error) {
+	if value == 0 {
+		return fallback, nil
+	}
+	if value > ceiling {
+		return 0, &InvalidRequestError{
+			Field: "EngineConfig." + field,
+			Err:   fmt.Errorf("%d exceeds maximum %d", value, ceiling),
 		}
 	}
-	applyUint64(&out.MaxMemoryBytes, defaultConfig.MaxMemoryBytes, hardCeilings.MaxMemoryBytes)
-	applyUint32(&out.MaxSourceBytes, defaultConfig.MaxSourceBytes, hardCeilings.MaxSourceBytes)
-	applyUint32(&out.MaxOutputBytes, defaultConfig.MaxOutputBytes, hardCeilings.MaxOutputBytes)
-	applyInt(&out.MaxStack, defaultConfig.MaxStack, hardCeilings.MaxStack)
-	applyUint32(&out.MaxImports, defaultConfig.MaxImports, hardCeilings.MaxImports)
-	applyUint32(&out.MaxImportBytes, defaultConfig.MaxImportBytes, hardCeilings.MaxImportBytes)
-	applyUint64(&out.MaxTotalImportBytes, defaultConfig.MaxTotalImportBytes, hardCeilings.MaxTotalImportBytes)
-	applyUint32(&out.MaxCapabilityCalls, defaultConfig.MaxCapabilityCalls, hardCeilings.MaxCapabilityCalls)
-	applyUint32(&out.MaxHostRequestBytes, defaultConfig.MaxHostRequestBytes, hardCeilings.MaxHostRequestBytes)
-	applyUint32(&out.MaxHostResponseBytes, defaultConfig.MaxHostResponseBytes, hardCeilings.MaxHostResponseBytes)
-	return out
+	return value, nil
+}
+
+func normalizeStack(value int) (int, error) {
+	switch {
+	case value == 0:
+		return defaultConfig.MaxStack, nil
+	case value < 0:
+		return 0, &InvalidRequestError{
+			Field: "EngineConfig.MaxStack",
+			Err:   errors.New("must not be negative"),
+		}
+	case value > hardCeilings.MaxStack:
+		return 0, &InvalidRequestError{
+			Field: "EngineConfig.MaxStack",
+			Err:   fmt.Errorf("%d exceeds maximum %d", value, hardCeilings.MaxStack),
+		}
+	default:
+		return value, nil
+	}
 }
 
 func prepareRequest(request Request, config EngineConfig) ([]byte, Request, error) {
@@ -515,8 +786,11 @@ func prepareRequest(request Request, config EngineConfig) ([]byte, Request, erro
 	descriptors := make(map[string]protocol.CapabilityDescriptor, len(request.Capabilities))
 	capabilities := make(map[string]Capability, len(request.Capabilities))
 	for name, capability := range request.Capabilities {
-		if name == "" {
-			return nil, Request{}, &InvalidRequestError{Field: "Capabilities", Err: errors.New("capability name is empty")}
+		if name == "" || !utf8.ValidString(name) {
+			return nil, Request{}, &InvalidRequestError{
+				Field: "Capabilities",
+				Err:   errors.New("capability name must be nonempty UTF-8"),
+			}
 		}
 		if capability.Call == nil {
 			return nil, Request{}, &InvalidRequestError{Field: "Capabilities." + name, Err: errors.New("Call is nil")}
@@ -544,13 +818,15 @@ func prepareRequest(request Request, config EngineConfig) ([]byte, Request, erro
 	}
 	request.Capabilities = capabilities
 	wire := protocol.EvaluationRequest{
-		Filename:     request.Filename,
-		Source:       request.Source,
-		ExtVars:      request.ExtVars,
-		ExtCode:      request.ExtCode,
-		TLAVars:      request.TLAVars,
-		TLACode:      request.TLACode,
-		Capabilities: descriptors,
+		Filename:      request.Filename,
+		Source:        request.Source,
+		ExtVars:       request.ExtVars,
+		ExtCode:       request.ExtCode,
+		TLAVars:       request.TLAVars,
+		TLACode:       request.TLACode,
+		Capabilities:  descriptors,
+		StringOutput:  request.StringOutput,
+		OutputNewline: !request.OmitTrailingNewline,
 		Limits: protocol.Limits{
 			MaxOutputBytes:       config.MaxOutputBytes,
 			MaxStack:             config.MaxStack,
@@ -591,6 +867,9 @@ func readHostRequest(mod api.Module, ptr, length, limit uint32) ([]byte, error) 
 	if length == 0 {
 		return nil, errors.New("host request is empty")
 	}
+	if ptr == 0 {
+		return nil, errors.New("host request pointer is zero")
+	}
 	if length > limit {
 		return nil, fmt.Errorf("host request length %d exceeds limit %d", length, limit)
 	}
@@ -599,6 +878,27 @@ func readHostRequest(mod api.Module, ptr, length, limit uint32) ([]byte, error) 
 		return nil, fmt.Errorf("host request range [%d,%d) is outside guest memory", ptr, uint64(ptr)+uint64(length))
 	}
 	return append([]byte(nil), memory...), nil
+}
+
+func hostResponseBuffer(mod api.Module, ptr, capacity, limit uint32) ([]byte, error) {
+	if capacity == 0 {
+		return nil, errors.New("host response capacity is zero")
+	}
+	if ptr == 0 {
+		return nil, errors.New("host response pointer is zero")
+	}
+	if capacity > limit {
+		return nil, fmt.Errorf("host response capacity %d exceeds limit %d", capacity, limit)
+	}
+	memory, ok := mod.Memory().Read(ptr, capacity)
+	if !ok {
+		return nil, fmt.Errorf(
+			"host response range [%d,%d) is outside guest memory",
+			ptr,
+			uint64(ptr)+uint64(capacity),
+		)
+	}
+	return memory, nil
 }
 
 func readGuestResult(mod api.Module, ptr, length, limit uint32) ([]byte, error) {
@@ -610,7 +910,13 @@ func readGuestResult(mod api.Module, ptr, length, limit uint32) ([]byte, error) 
 		}
 	}
 	if length == 0 {
+		if ptr != 0 {
+			return nil, &ABIError{Err: errors.New("empty guest result has a nonzero pointer")}
+		}
 		return nil, nil
+	}
+	if ptr == 0 {
+		return nil, &ABIError{Err: errors.New("nonempty guest result has a zero pointer")}
 	}
 	memory, ok := mod.Memory().Read(ptr, length)
 	if !ok {
@@ -619,33 +925,39 @@ func readGuestResult(mod api.Module, ptr, length, limit uint32) ([]byte, error) 
 	return append([]byte(nil), memory...), nil
 }
 
-func writeHostResponse(mod api.Module, ptr, capacity, status uint32, payload []byte) uint64 {
-	if uint64(len(payload)) > uint64(capacity) {
+func writeHostResponse(response []byte, status uint32, payload []byte) uint64 {
+	if status == protocol.HostOK && len(payload) > len(response) {
 		return protocol.Pack(protocol.HostLimit, 0)
 	}
-	if len(payload) > 0 && !mod.Memory().Write(ptr, payload) {
-		return protocol.Pack(protocol.HostMalformed, 0)
+	if status != protocol.HostOK {
+		payload = validUTF8Prefix(payload, len(response))
 	}
+	if len(payload) > len(response) {
+		payload = payload[:len(response)]
+	}
+	copy(response, payload)
 	return protocol.Pack(status, uint32(len(payload)))
 }
 
-func decodeJSON(data []byte, target any) error {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	if err := decoder.Decode(target); err != nil {
-		return err
+func validUTF8Prefix(payload []byte, limit int) []byte {
+	if !utf8.Valid(payload) {
+		payload = []byte(strings.ToValidUTF8(string(payload), "\uFFFD"))
 	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return errors.New("unexpected trailing JSON value")
-		}
-		return err
+	if len(payload) <= limit {
+		return payload
 	}
-	return nil
+	payload = payload[:limit]
+	for !utf8.Valid(payload) {
+		payload = payload[:len(payload)-1]
+	}
+	return payload
 }
 
 func (s *invocationState) record(err error) {
 	s.mu.Lock()
-	s.lastErr = err
+	if s.lastErr == nil {
+		s.lastErr = err
+	}
 	s.mu.Unlock()
 }
 
@@ -683,7 +995,7 @@ func (e *Engine) runtimeError(ctx context.Context, operation string, err error) 
 
 func guestStatusError(status uint32, payload []byte, config EngineConfig) error {
 	var guest protocol.GuestError
-	if err := decodeJSON(payload, &guest); err != nil {
+	if err := protocol.DecodeJSON(payload, &guest); err != nil {
 		return &ABIError{Err: fmt.Errorf("decode guest error for status %d: %w", status, err)}
 	}
 	cause := errors.New(guest.Message)
@@ -692,6 +1004,8 @@ func guestStatusError(status uint32, payload []byte, config EngineConfig) error 
 		return &InvalidRequestError{Err: cause}
 	case protocol.EvalJsonnetError:
 		return &EvaluationError{Err: cause}
+	case protocol.EvalHostError:
+		return &ABIError{Err: fmt.Errorf("guest reported an unclassified host error: %w", cause)}
 	case protocol.EvalLimit:
 		return &LimitError{
 			Resource: guest.Kind,
