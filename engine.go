@@ -328,7 +328,7 @@ func (e *Engine) hostCall(
 	if callErr != nil {
 		state.record(callErr)
 	}
-	if len(payload) > len(response) {
+	if status == protocol.HostOK && len(payload) > len(response) {
 		limit := &LimitError{
 			Resource: "host response capacity",
 			Limit:    uint64(len(response)),

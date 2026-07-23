@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -603,6 +604,45 @@ func TestGenericHostCallDispatchAndValidation(t *testing.T) {
 	status, _ = protocol.Unpack(packed)
 	if status != protocol.HostMalformed {
 		t.Fatalf("expected malformed pointer status, got %d", status)
+	}
+
+	errorRequest := []byte(`{"name":"fail","args":[]}`)
+	if !mod.Memory().Write(requestPtr, errorRequest) {
+		t.Fatal("write error request")
+	}
+	errorState := &invocationState{
+		config: state.config,
+		request: Request{
+			Capabilities: map[string]Capability{
+				"fail": {
+					Call: func(context.Context, []any) (any, error) {
+						return nil, errors.New(strings.Repeat("é", int(responseCap)))
+					},
+				},
+			},
+		},
+	}
+	errorCtx := context.WithValue(context.Background(), invocationKey{}, errorState)
+	packed = engine.hostCall(
+		errorCtx,
+		mod,
+		protocol.OperationCallCapability,
+		requestPtr,
+		uint32(len(errorRequest)),
+		responsePtr,
+		responseCap,
+	)
+	status, length = protocol.Unpack(packed)
+	var capabilityErr *CapabilityError
+	if status != protocol.HostHandlerFailure ||
+		length > responseCap ||
+		!errors.As(errorState.error(), &capabilityErr) {
+		t.Fatalf(
+			"oversized handler error changed status: status=%d length=%d error=%v",
+			status,
+			length,
+			errorState.error(),
+		)
 	}
 }
 
