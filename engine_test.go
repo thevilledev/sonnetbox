@@ -128,6 +128,31 @@ func TestEngineConfigValidation(t *testing.T) {
 	}
 }
 
+func TestInvalidUTF8Input(t *testing.T) {
+	config, err := normalizeConfig(EngineConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalid := string([]byte{0xff})
+	for _, request := range []Request{
+		{Source: invalid},
+		{Source: `{}`, ExtVars: map[string]string{invalid: "value"}},
+		{Source: `{}`, ExtCode: map[string]string{"value": invalid}},
+		{Source: `{}`, TLAVars: map[string]string{"value": invalid}},
+		{Source: `{}`, TLACode: map[string]string{"value": invalid}},
+		{
+			Source: `{}`,
+			Capabilities: map[string]Capability{
+				invalid: {Call: func(context.Context, []any) (any, error) { return nil, nil }},
+			},
+		},
+	} {
+		if _, _, err := prepareRequest(request, config); err == nil {
+			t.Fatalf("expected invalid UTF-8 request to fail: %#v", request)
+		}
+	}
+}
+
 func TestVirtualImportsAndDenials(t *testing.T) {
 	importer, err := NewMapImporter(map[string][]byte{
 		"lib/value.jsonnet": []byte(`{value: 42}`),

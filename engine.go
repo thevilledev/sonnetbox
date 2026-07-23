@@ -776,11 +776,27 @@ func prepareRequest(request Request, config EngineConfig) ([]byte, Request, erro
 	if err := validateVirtualPath(request.Filename); err != nil {
 		return nil, Request{}, &InvalidRequestError{Field: "Filename", Err: err}
 	}
+	if !utf8.ValidString(request.Source) {
+		return nil, Request{}, &InvalidRequestError{
+			Field: "Source",
+			Err:   errors.New("must be valid UTF-8"),
+		}
+	}
 	if uint64(len(request.Source)) > uint64(config.MaxSourceBytes) {
 		return nil, Request{}, &LimitError{
 			Resource: "source bytes",
 			Limit:    uint64(config.MaxSourceBytes),
 			Actual:   uint64(len(request.Source)),
+		}
+	}
+	for field, values := range map[string]map[string]string{
+		"ExtVars": request.ExtVars,
+		"ExtCode": request.ExtCode,
+		"TLAVars": request.TLAVars,
+		"TLACode": request.TLACode,
+	} {
+		if err := validateTextMap(field, values); err != nil {
+			return nil, Request{}, err
 		}
 	}
 	descriptors := make(map[string]protocol.CapabilityDescriptor, len(request.Capabilities))
@@ -846,6 +862,24 @@ func prepareRequest(request Request, config EngineConfig) ([]byte, Request, erro
 		}
 	}
 	return encoded, request, nil
+}
+
+func validateTextMap(field string, values map[string]string) error {
+	for key, value := range values {
+		if !utf8.ValidString(key) {
+			return &InvalidRequestError{
+				Field: field,
+				Err:   errors.New("contains a key that is not valid UTF-8"),
+			}
+		}
+		if !utf8.ValidString(value) {
+			return &InvalidRequestError{
+				Field: field + "." + key,
+				Err:   errors.New("must be valid UTF-8"),
+			}
+		}
+	}
+	return nil
 }
 
 func callU32(ctx context.Context, mod api.Module, name string) (uint32, error) {
