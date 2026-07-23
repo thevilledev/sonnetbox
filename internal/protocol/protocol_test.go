@@ -37,8 +37,8 @@ func TestDecodeJSONRejectsUnknownAndTrailingFields(t *testing.T) {
 }
 
 func TestABIConstants(t *testing.T) {
-	if ABIVersion != 2 {
-		t.Fatalf("ABI version = %d, want 2", ABIVersion)
+	if ABIVersion != 3 {
+		t.Fatalf("ABI version = %d, want 3", ABIVersion)
 	}
 	statuses := []uint32{
 		HostOK,
@@ -59,6 +59,53 @@ func TestABIConstants(t *testing.T) {
 			OperationResolveImport,
 			OperationCallCapability,
 		)
+	}
+}
+
+func TestOutputFramesRoundTrip(t *testing.T) {
+	filesPayload, err := EncodeMultiOutput(map[string]string{
+		"b.json": "second",
+		"a.json": "first",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := DecodeMultiOutput(filesPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(files["a.json"]) != "first" || string(files["b.json"]) != "second" {
+		t.Fatalf("unexpected multi-file output: %#v", files)
+	}
+
+	streamPayload, err := EncodeStreamOutput([]string{"first", "second"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	documents, err := DecodeStreamOutput(streamPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(documents) != 2 ||
+		string(documents[0]) != "first" ||
+		string(documents[1]) != "second" {
+		t.Fatalf("unexpected stream output: %#v", documents)
+	}
+}
+
+func TestOutputFramesRejectMalformedData(t *testing.T) {
+	for _, payload := range [][]byte{
+		nil,
+		{1, 0, 0, 0},
+		{1, 0, 0, 0, 4, 0, 0, 0, 'a'},
+		{0, 0, 0, 0, 1},
+	} {
+		if _, err := DecodeMultiOutput(payload); err == nil {
+			t.Fatalf("expected malformed multi-file payload %v to fail", payload)
+		}
+		if _, err := DecodeStreamOutput(payload); err == nil {
+			t.Fatalf("expected malformed stream payload %v to fail", payload)
+		}
 	}
 }
 

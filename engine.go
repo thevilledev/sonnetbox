@@ -165,6 +165,37 @@ func validateABIVersion(version uint32) error {
 // Evaluate runs request in a fresh guest instance. It is safe to call
 // concurrently.
 func (e *Engine) Evaluate(ctx context.Context, request Request) (Result, error) {
+	return e.evaluate(ctx, request, protocol.InputSnippet)
+}
+
+// EvaluateFile loads filename through Request.Importer and evaluates it in a
+// fresh guest instance. Request.Source must be empty.
+func (e *Engine) EvaluateFile(
+	ctx context.Context,
+	filename string,
+	request Request,
+) (Result, error) {
+	if request.Source != "" {
+		return Result{}, &InvalidRequestError{
+			Field: "Source",
+			Err:   errors.New("must be empty for file evaluation"),
+		}
+	}
+	if request.Filename != "" && request.Filename != filename {
+		return Result{}, &InvalidRequestError{
+			Field: "Filename",
+			Err:   errors.New("conflicts with EvaluateFile filename"),
+		}
+	}
+	request.Filename = filename
+	return e.evaluate(ctx, request, protocol.InputFile)
+}
+
+func (e *Engine) evaluate(
+	ctx context.Context,
+	request Request,
+	inputMode protocol.InputMode,
+) (Result, error) {
 	if ctx == nil {
 		return Result{}, &InvalidRequestError{Field: "context", Err: errors.New("context is nil")}
 	}
@@ -181,7 +212,7 @@ func (e *Engine) Evaluate(ctx context.Context, request Request) (Result, error) 
 	r := e.runtime
 	e.mu.RUnlock()
 
-	wireRequest, normalized, err := prepareRequest(request, config)
+	wireRequest, normalized, err := prepareRequestMode(request, config, inputMode)
 	if err != nil {
 		return Result{}, err
 	}
@@ -250,7 +281,7 @@ func (e *Engine) Evaluate(ctx context.Context, request Request) (Result, error) 
 		return Result{}, err
 	}
 	if status == protocol.EvalOK {
-		return Result{Output: payload}, nil
+		return decodeResult(normalized.OutputMode, payload)
 	}
 	return Result{}, guestStatusError(status, payload, config)
 }
@@ -384,7 +415,7 @@ func (e *Engine) resolveImport(
 			return protocol.HostMalformed, []byte(wrapped.Error()), wrapped
 		}
 	}
-	if err := validateVirtualPath(request.ImportedPath); err != nil {
+	if err := validateImportPath(request.ImportedPath); err != nil {
 		denied := &ImportDeniedError{
 			ImportedFrom: request.ImportedFrom,
 			ImportedPath: request.ImportedPath,
@@ -410,7 +441,7 @@ func (e *Engine) resolveImport(
 		denied := &ImportDeniedError{
 			ImportedFrom: request.ImportedFrom,
 			ImportedPath: request.ImportedPath,
-			Err:          errImportDenied,
+			Err:          ErrImportDenied,
 		}
 		return protocol.HostDenied, []byte(denied.Error()), denied
 	}
@@ -423,7 +454,7 @@ func (e *Engine) resolveImport(
 	if importErr != nil {
 		var wrapped error
 		status := protocol.HostHandlerFailure
-		if errors.Is(importErr, errImportDenied) {
+		if errors.Is(importErr, ErrImportDenied) {
 			status = protocol.HostDenied
 			wrapped = &ImportDeniedError{
 				ImportedFrom: request.ImportedFrom,
@@ -794,11 +825,37 @@ func normalizeStack(value int) (int, error) {
 }
 
 func prepareRequest(request Request, config EngineConfig) ([]byte, Request, error) {
+	return prepareRequestMode(request, config, protocol.InputSnippet)
+}
+
+func prepareRequestMode(
+	request Request,
+	config EngineConfig,
+	inputMode protocol.InputMode,
+) ([]byte, Request, error) {
 	if request.Filename == "" {
 		request.Filename = "snippet.jsonnet"
 	}
 	if err := validateVirtualPath(request.Filename); err != nil {
 		return nil, Request{}, &InvalidRequestError{Field: "Filename", Err: err}
+	}
+	if request.OutputMode > OutputModeStream {
+		return nil, Request{}, &InvalidRequestError{
+			Field: "OutputMode",
+			Err:   fmt.Errorf("unknown output mode %d", request.OutputMode),
+		}
+	}
+	if inputMode > protocol.InputFile {
+		return nil, Request{}, &InvalidRequestError{
+			Field: "input mode",
+			Err:   fmt.Errorf("unknown input mode %d", inputMode),
+		}
+	}
+	if inputMode == protocol.InputFile && request.Source != "" {
+		return nil, Request{}, &InvalidRequestError{
+			Field: "Source",
+			Err:   errors.New("must be empty for file evaluation"),
+		}
 	}
 	if !utf8.ValidString(request.Source) {
 		return nil, Request{}, &InvalidRequestError{
@@ -863,6 +920,8 @@ func prepareRequest(request Request, config EngineConfig) ([]byte, Request, erro
 	wire := protocol.EvaluationRequest{
 		Filename:      request.Filename,
 		Source:        request.Source,
+		InputMode:     inputMode,
+		OutputMode:    protocol.OutputMode(request.OutputMode),
 		ExtVars:       request.ExtVars,
 		ExtCode:       request.ExtCode,
 		TLAVars:       request.TLAVars,
@@ -889,6 +948,27 @@ func prepareRequest(request Request, config EngineConfig) ([]byte, Request, erro
 		}
 	}
 	return encoded, request, nil
+}
+
+func decodeResult(mode OutputMode, payload []byte) (Result, error) {
+	switch mode {
+	case OutputModeSingle:
+		return Result{Output: payload}, nil
+	case OutputModeMulti:
+		files, err := protocol.DecodeMultiOutput(payload)
+		if err != nil {
+			return Result{}, &ABIError{Err: fmt.Errorf("decode multi-file result: %w", err)}
+		}
+		return Result{Files: files}, nil
+	case OutputModeStream:
+		documents, err := protocol.DecodeStreamOutput(payload)
+		if err != nil {
+			return Result{}, &ABIError{Err: fmt.Errorf("decode stream result: %w", err)}
+		}
+		return Result{Documents: documents}, nil
+	default:
+		return Result{}, &ABIError{Err: fmt.Errorf("decode unknown output mode %d", mode)}
+	}
 }
 
 func validateTextMap(field string, values map[string]string) error {

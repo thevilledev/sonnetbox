@@ -87,6 +87,18 @@ func evaluate() (status uint32) {
 		setError("invalid_request", "guest limits must be positive and within ABI ceilings")
 		return protocol.EvalInvalidRequest
 	}
+	if req.InputMode > protocol.InputFile {
+		setError("invalid_request", "unknown input mode")
+		return protocol.EvalInvalidRequest
+	}
+	if req.OutputMode > protocol.OutputStream {
+		setError("invalid_request", "unknown output mode")
+		return protocol.EvalInvalidRequest
+	}
+	if req.InputMode == protocol.InputFile && req.Source != "" {
+		setError("invalid_request", "file evaluation cannot include inline source")
+		return protocol.EvalInvalidRequest
+	}
 	if uint64(len(request)) > uint64(req.Limits.MaxHostRequestBytes) {
 		setError("invalid_request", "encoded request exceeds the guest request limit")
 		return protocol.EvalInvalidRequest
@@ -97,6 +109,7 @@ func evaluate() (status uint32) {
 		maxRequest:  req.Limits.MaxHostRequestBytes,
 		maxResponse: req.Limits.MaxHostResponseBytes,
 		imports:     make(map[string]importResult),
+		contents:    make(map[string]jsonnet.Contents),
 	}
 	vm := jsonnet.MakeVM()
 	vm.MaxStack = req.Limits.MaxStack
@@ -145,7 +158,7 @@ func evaluate() (status uint32) {
 		})
 	}
 
-	output, err := vm.EvaluateAnonymousSnippet(req.Filename, req.Source)
+	output, err := evaluateRequest(vm, req)
 	if err != nil {
 		if bridge.localLimit != nil {
 			setGuestError(*bridge.localLimit)
@@ -169,6 +182,62 @@ func evaluate() (status uint32) {
 	}
 	result = []byte(output)
 	return protocol.EvalOK
+}
+
+func evaluateRequest(vm *jsonnet.VM, req protocol.EvaluationRequest) ([]byte, error) {
+	var node ast.Node
+	var err error
+	if req.InputMode == protocol.InputSnippet {
+		node, err = jsonnet.SnippetToAST(req.Filename, req.Source)
+		if err != nil {
+			return nil, errors.New(vm.ErrorFormatter.Format(err))
+		}
+	}
+
+	switch req.OutputMode {
+	case protocol.OutputSingle:
+		var output string
+		if req.InputMode == protocol.InputFile {
+			output, err = vm.EvaluateFile(req.Filename)
+		} else {
+			output, err = vm.Evaluate(node)
+			err = formatEvaluationError(vm, err)
+		}
+		return []byte(output), err
+	case protocol.OutputMulti:
+		var files map[string]string
+		if req.InputMode == protocol.InputFile {
+			files, err = vm.EvaluateFileMulti(req.Filename)
+		} else {
+			files, err = vm.EvaluateMulti(node)
+			err = formatEvaluationError(vm, err)
+		}
+		if err != nil {
+			return nil, err
+		}
+		return protocol.EncodeMultiOutput(files)
+	case protocol.OutputStream:
+		var documents []string
+		if req.InputMode == protocol.InputFile {
+			documents, err = vm.EvaluateFileStream(req.Filename)
+		} else {
+			documents, err = vm.EvaluateStream(node)
+			err = formatEvaluationError(vm, err)
+		}
+		if err != nil {
+			return nil, err
+		}
+		return protocol.EncodeStreamOutput(documents)
+	default:
+		return nil, errors.New("unknown output mode")
+	}
+}
+
+func formatEvaluationError(vm *jsonnet.VM, err error) error {
+	if err == nil {
+		return nil
+	}
+	return errors.New(vm.ErrorFormatter.Format(err))
 }
 
 //go:wasmexport securejsonnet_result_ptr
@@ -195,6 +264,7 @@ type hostBridge struct {
 	maxResponse uint32
 	response    []byte
 	imports     map[string]importResult
+	contents    map[string]jsonnet.Contents
 	lastStatus  uint32
 	localLimit  *protocol.GuestError
 }
@@ -226,11 +296,12 @@ func (b *hostBridge) Import(importedFrom, importedPath string) (jsonnet.Contents
 		b.lastStatus = protocol.HostMalformed
 		err = errors.New("malformed import response: canonical path is empty")
 	}
-	cached := importResult{
-		content: jsonnet.MakeContentsRaw(append([]byte(nil), decoded.Content...)),
-		foundAt: decoded.Canonical,
-		err:     err,
+	content, exists := b.contents[decoded.Canonical]
+	if !exists {
+		content = jsonnet.MakeContentsRaw(append([]byte(nil), decoded.Content...))
+		b.contents[decoded.Canonical] = content
 	}
+	cached := importResult{content: content, foundAt: decoded.Canonical, err: err}
 	b.imports[key] = cached
 	return cached.content, cached.foundAt, cached.err
 }

@@ -84,6 +84,35 @@ func TestStringOutputAndTrailingNewline(t *testing.T) {
 	}
 }
 
+func TestMultiAndStreamOutput(t *testing.T) {
+	engine := newTestEngine(t, EngineConfig{})
+	multi, err := engine.Evaluate(context.Background(), Request{
+		Source:     `{["a.json"]: {value: 1}, ["b.json"]: {value: 2}}`,
+		OutputMode: OutputModeMulti,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(multi.Files) != 2 {
+		t.Fatalf("multi-file outputs = %d, want 2", len(multi.Files))
+	}
+	assertJSON(t, multi.Files["a.json"], map[string]any{"value": float64(1)})
+	assertJSON(t, multi.Files["b.json"], map[string]any{"value": float64(2)})
+
+	stream, err := engine.Evaluate(context.Background(), Request{
+		Source:     `[{value: 1}, {value: 2}]`,
+		OutputMode: OutputModeStream,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stream.Documents) != 2 {
+		t.Fatalf("stream documents = %d, want 2", len(stream.Documents))
+	}
+	assertJSON(t, stream.Documents[0], map[string]any{"value": float64(1)})
+	assertJSON(t, stream.Documents[1], map[string]any{"value": float64(2)})
+}
+
 func TestEngineConfigValidation(t *testing.T) {
 	got, err := normalizeConfig(EngineConfig{})
 	if err != nil {
@@ -163,7 +192,7 @@ func TestVirtualImportsAndDenials(t *testing.T) {
 	engine := newTestEngine(t, EngineConfig{})
 	result, err := engine.Evaluate(context.Background(), Request{
 		Filename: "lib/main.jsonnet",
-		Source:   `import "lib/value.jsonnet"`,
+		Source:   `import "./value.jsonnet"`,
 		Importer: importer,
 	})
 	if err != nil {
@@ -202,6 +231,43 @@ func TestVirtualImportsAndDenials(t *testing.T) {
 	var importErr *ImportError
 	if !errors.As(err, &importErr) {
 		t.Fatalf("expected importer panic as ImportError, got %T: %v", err, err)
+	}
+}
+
+func TestEvaluateFileAndRootRelativeImports(t *testing.T) {
+	importer, err := NewMapImporter(map[string][]byte{
+		"apps/main.jsonnet":  []byte(`import "./value.jsonnet"`),
+		"apps/value.jsonnet": []byte(`{value: 42}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := newTestEngine(t, EngineConfig{})
+	result, err := engine.EvaluateFile(context.Background(), "apps/main.jsonnet", Request{
+		Importer: importer,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertJSON(t, result.Output, map[string]any{"value": float64(42)})
+
+	result, err = engine.Evaluate(context.Background(), Request{
+		Filename: "apps/inline.jsonnet",
+		Source:   `import "./value.jsonnet"`,
+		Importer: importer,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertJSON(t, result.Output, map[string]any{"value": float64(42)})
+
+	_, err = engine.EvaluateFile(context.Background(), "apps/main.jsonnet", Request{
+		Source:   `{}`,
+		Importer: importer,
+	})
+	var invalid *InvalidRequestError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("expected inline file source to be rejected, got %T: %v", err, err)
 	}
 }
 

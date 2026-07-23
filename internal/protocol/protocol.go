@@ -3,13 +3,35 @@ package protocol
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"math"
+	"sort"
 )
 
 // ABIVersion is the current host-to-guest ABI version.
-const ABIVersion uint32 = 2
+const ABIVersion uint32 = 3
+
+// InputMode selects whether source is supplied inline or loaded through the
+// importer.
+type InputMode uint8
+
+const (
+	InputSnippet InputMode = iota
+	InputFile
+)
+
+// OutputMode selects the guest manifestation shape.
+type OutputMode uint8
+
+const (
+	OutputSingle OutputMode = iota
+	OutputMulti
+	OutputStream
+)
 
 const (
 	// EvalOK reports a successful guest evaluation.
@@ -65,6 +87,8 @@ type CapabilityDescriptor struct {
 type EvaluationRequest struct {
 	Filename      string                          `json:"filename"`
 	Source        string                          `json:"source"`
+	InputMode     InputMode                       `json:"input_mode,omitempty"`
+	OutputMode    OutputMode                      `json:"output_mode,omitempty"`
 	ExtVars       map[string]string               `json:"ext_vars,omitempty"`
 	ExtCode       map[string]string               `json:"ext_code,omitempty"`
 	TLAVars       map[string]string               `json:"tla_vars,omitempty"`
@@ -130,4 +154,128 @@ func DecodeJSON(data []byte, target any) error {
 		return err
 	}
 	return nil
+}
+
+// EncodeMultiOutput encodes filename/output pairs deterministically.
+func EncodeMultiOutput(files map[string]string) ([]byte, error) {
+	if uint64(len(files)) > math.MaxUint32 {
+		return nil, errors.New("too many multi-file outputs")
+	}
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := binary.LittleEndian.AppendUint32(nil, uint32(len(names))) //nolint:gosec // length is bounded above.
+	for _, name := range names {
+		var err error
+		out, err = appendFramedString(out, name)
+		if err != nil {
+			return nil, err
+		}
+		out, err = appendFramedString(out, files[name])
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// DecodeMultiOutput decodes filename/output pairs produced by EncodeMultiOutput.
+func DecodeMultiOutput(data []byte) (map[string][]byte, error) {
+	count, rest, err := consumeUint32(data)
+	if err != nil {
+		return nil, err
+	}
+	if uint64(count) > uint64(len(rest))/8 {
+		return nil, errors.New("multi-file output count exceeds payload")
+	}
+	files := make(map[string][]byte, int(count))
+	for range count {
+		var name []byte
+		name, rest, err = consumeBytes(rest)
+		if err != nil {
+			return nil, err
+		}
+		var output []byte
+		output, rest, err = consumeBytes(rest)
+		if err != nil {
+			return nil, err
+		}
+		key := string(name)
+		if _, exists := files[key]; exists {
+			return nil, fmt.Errorf("duplicate multi-file output %q", key)
+		}
+		files[key] = append([]byte(nil), output...)
+	}
+	if len(rest) != 0 {
+		return nil, errors.New("trailing multi-file output bytes")
+	}
+	return files, nil
+}
+
+// EncodeStreamOutput encodes stream documents in source order.
+func EncodeStreamOutput(documents []string) ([]byte, error) {
+	if uint64(len(documents)) > math.MaxUint32 {
+		return nil, errors.New("too many stream documents")
+	}
+	out := binary.LittleEndian.AppendUint32(nil, uint32(len(documents))) //nolint:gosec // length is bounded above.
+	for _, document := range documents {
+		var err error
+		out, err = appendFramedString(out, document)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// DecodeStreamOutput decodes documents produced by EncodeStreamOutput.
+func DecodeStreamOutput(data []byte) ([][]byte, error) {
+	count, rest, err := consumeUint32(data)
+	if err != nil {
+		return nil, err
+	}
+	if uint64(count) > uint64(len(rest))/4 {
+		return nil, errors.New("stream output count exceeds payload")
+	}
+	documents := make([][]byte, 0, int(count))
+	for range count {
+		var document []byte
+		document, rest, err = consumeBytes(rest)
+		if err != nil {
+			return nil, err
+		}
+		documents = append(documents, append([]byte(nil), document...))
+	}
+	if len(rest) != 0 {
+		return nil, errors.New("trailing stream output bytes")
+	}
+	return documents, nil
+}
+
+func appendFramedString(out []byte, value string) ([]byte, error) {
+	if uint64(len(value)) > math.MaxUint32 {
+		return nil, errors.New("output component is too large")
+	}
+	out = binary.LittleEndian.AppendUint32(out, uint32(len(value))) //nolint:gosec // length is bounded above.
+	return append(out, value...), nil
+}
+
+func consumeUint32(data []byte) (uint32, []byte, error) {
+	if len(data) < 4 {
+		return 0, nil, errors.New("truncated output frame")
+	}
+	return binary.LittleEndian.Uint32(data[:4]), data[4:], nil
+}
+
+func consumeBytes(data []byte) ([]byte, []byte, error) {
+	length, rest, err := consumeUint32(data)
+	if err != nil {
+		return nil, nil, err
+	}
+	if uint64(length) > uint64(len(rest)) {
+		return nil, nil, errors.New("output frame length exceeds payload")
+	}
+	return rest[:length], rest[length:], nil
 }

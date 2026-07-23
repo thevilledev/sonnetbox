@@ -2,6 +2,19 @@ package securejsonnet
 
 import "context"
 
+// OutputMode selects how the top-level Jsonnet value is manifested.
+type OutputMode uint8
+
+const (
+	// OutputModeSingle manifests one JSON value, or one unquoted string when
+	// Request.StringOutput is set.
+	OutputModeSingle OutputMode = iota
+	// OutputModeMulti manifests a top-level object as filename/output pairs.
+	OutputModeMulti
+	// OutputModeStream manifests a top-level array as a sequence of documents.
+	OutputModeStream
+)
+
 // EngineConfig sets process-wide ceilings for an Engine. A zero field selects
 // the documented default for that field.
 type EngineConfig struct {
@@ -72,7 +85,10 @@ type Request struct {
 	Importer Importer
 	// Capabilities exposes only these request-scoped native functions.
 	Capabilities map[string]Capability
+	// OutputMode selects single, multi-file, or stream manifestation.
+	OutputMode OutputMode
 	// StringOutput returns a top-level Jsonnet string without JSON quoting.
+	// It applies to single and multi-file output.
 	StringOutput bool
 	// OmitTrailingNewline disables go-jsonnet's default output newline.
 	OmitTrailingNewline bool
@@ -80,6 +96,10 @@ type Request struct {
 
 // Result is a completed Jsonnet evaluation.
 type Result struct {
-	// Output contains rendered JSON or StringOutput bytes.
+	// Output contains single-mode rendered JSON or StringOutput bytes.
 	Output []byte
+	// Files contains multi-mode rendered outputs keyed by filename.
+	Files map[string][]byte
+	// Documents contains stream-mode rendered documents in source order.
+	Documents [][]byte
 }
