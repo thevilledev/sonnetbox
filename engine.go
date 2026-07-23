@@ -187,6 +187,15 @@ func (e *Engine) Evaluate(ctx context.Context, request Request) (Result, error) 
 	return e.evaluate(ctx, request, protocol.InputSnippet)
 }
 
+// EvaluateAnonymous evaluates inline source whose filename is used only for
+// diagnostics. Imports are resolved from the importer's anonymous root.
+func (e *Engine) EvaluateAnonymous(
+	ctx context.Context,
+	request Request,
+) (Result, error) {
+	return e.evaluate(ctx, request, protocol.InputAnonymous)
+}
+
 // EvaluateFile loads filename through Request.Importer and evaluates it in a
 // fresh guest instance. Request.Source must be empty.
 func (e *Engine) EvaluateFile(
@@ -1055,7 +1064,7 @@ func prepareRequestMode(
 			Err:   fmt.Errorf("unknown output mode %d", request.OutputMode),
 		}
 	}
-	if inputMode > protocol.InputFile {
+	if inputMode > protocol.InputAnonymous {
 		return nil, Request{}, &InvalidRequestError{
 			Field: "input mode",
 			Err:   fmt.Errorf("unknown input mode %d", inputMode),

@@ -93,7 +93,7 @@ func evaluate() (status uint32) {
 		setError("invalid_request", "guest limits must be positive and within ABI ceilings")
 		return protocol.EvalInvalidRequest
 	}
-	if req.InputMode > protocol.InputFile {
+	if req.InputMode > protocol.InputAnonymous {
 		setError("invalid_request", "unknown input mode")
 		return protocol.EvalInvalidRequest
 	}
@@ -212,20 +212,30 @@ func evaluateRequest(vm *jsonnet.VM, req protocol.EvaluationRequest) ([]byte, er
 	switch req.OutputMode {
 	case protocol.OutputSingle:
 		var output string
-		if req.InputMode == protocol.InputFile {
+		switch req.InputMode {
+		case protocol.InputFile:
 			output, err = vm.EvaluateFile(req.Filename)
-		} else {
+		case protocol.InputAnonymous:
+			output, err = vm.EvaluateAnonymousSnippet(req.Filename, req.Source)
+		case protocol.InputSnippet:
 			output, err = vm.Evaluate(node)
 			err = formatEvaluationError(vm, err)
+		default:
+			err = errors.New("unknown input mode")
 		}
 		return []byte(output), err
 	case protocol.OutputMulti:
 		var files map[string]string
-		if req.InputMode == protocol.InputFile {
+		switch req.InputMode {
+		case protocol.InputFile:
 			files, err = vm.EvaluateFileMulti(req.Filename)
-		} else {
+		case protocol.InputAnonymous:
+			files, err = vm.EvaluateAnonymousSnippetMulti(req.Filename, req.Source)
+		case protocol.InputSnippet:
 			files, err = vm.EvaluateMulti(node)
 			err = formatEvaluationError(vm, err)
+		default:
+			err = errors.New("unknown input mode")
 		}
 		if err != nil {
 			return nil, err
@@ -233,11 +243,16 @@ func evaluateRequest(vm *jsonnet.VM, req protocol.EvaluationRequest) ([]byte, er
 		return protocol.EncodeMultiOutput(files)
 	case protocol.OutputStream:
 		var documents []string
-		if req.InputMode == protocol.InputFile {
+		switch req.InputMode {
+		case protocol.InputFile:
 			documents, err = vm.EvaluateFileStream(req.Filename)
-		} else {
+		case protocol.InputAnonymous:
+			documents, err = vm.EvaluateAnonymousSnippetStream(req.Filename, req.Source)
+		case protocol.InputSnippet:
 			documents, err = vm.EvaluateStream(node)
 			err = formatEvaluationError(vm, err)
+		default:
+			err = errors.New("unknown input mode")
 		}
 		if err != nil {
 			return nil, err

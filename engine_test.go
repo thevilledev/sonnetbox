@@ -409,6 +409,33 @@ func TestEvaluateFileAndRootRelativeImports(t *testing.T) {
 	}
 }
 
+func TestEvaluateAnonymousUsesImporterRoot(t *testing.T) {
+	engine := newTestEngine(t, EngineConfig{})
+	var importedFrom string
+	result, err := engine.EvaluateAnonymous(context.Background(), Request{
+		Filename: "diagnostics/main.jsonnet",
+		Source:   `import "value.jsonnet"`,
+		Importer: importerFunc(func(
+			_ context.Context,
+			from string,
+			importedPath string,
+		) (string, []byte, error) {
+			importedFrom = from
+			if importedPath != "value.jsonnet" {
+				return "", nil, ErrImportDenied
+			}
+			return "value.jsonnet", []byte(`42`), nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertJSON(t, result.Output, float64(42))
+	if importedFrom != "" {
+		t.Fatalf("anonymous import came from %q", importedFrom)
+	}
+}
+
 func TestImportLimits(t *testing.T) {
 	importer, err := NewMapImporter(map[string][]byte{
 		"a.jsonnet": []byte(`"aaaaaaaaaaaaaaaa"`),

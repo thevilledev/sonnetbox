@@ -13,7 +13,7 @@ import (
 )
 
 // ABIVersion is the current host-to-guest ABI version.
-const ABIVersion uint32 = 4
+const ABIVersion uint32 = 5
 
 // InputMode selects whether source is supplied inline or loaded through the
 // importer.
@@ -24,6 +24,8 @@ const (
 	InputSnippet InputMode = iota
 	// InputFile loads EvaluationRequest.Filename through the importer.
 	InputFile
+	// InputAnonymous uses the filename only for diagnostics.
+	InputAnonymous
 )
 
 // OutputMode selects the guest manifestation shape.
