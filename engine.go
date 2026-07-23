@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"unicode/utf8"
 
 	"github.com/tetratelabs/wazero"
@@ -60,6 +61,7 @@ type Engine struct {
 	config   EngineConfig
 	runtime  wazero.Runtime
 	compiled wazero.CompiledModule
+	instance atomic.Uint64
 }
 
 type invocationKey struct{}
@@ -171,9 +173,7 @@ func (e *Engine) Evaluate(ctx context.Context, request Request) (Result, error) 
 	state := &invocationState{request: normalized, config: config}
 	callCtx := context.WithValue(ctx, invocationKey{}, state)
 
-	mod, err := r.InstantiateModule(callCtx, compiled, wazero.NewModuleConfig().
-		WithName("").
-		WithStartFunctions("_initialize"))
+	mod, err := r.InstantiateModule(callCtx, compiled, e.moduleConfig())
 	if err != nil {
 		return Result{}, e.runtimeError(ctx, "initialize", err)
 	}
@@ -254,9 +254,14 @@ func (e *Engine) Close(ctx context.Context) error {
 }
 
 func (e *Engine) instantiate(ctx context.Context) (api.Module, error) {
-	return e.runtime.InstantiateModule(ctx, e.compiled, wazero.NewModuleConfig().
-		WithName("").
-		WithStartFunctions("_initialize"))
+	return e.runtime.InstantiateModule(ctx, e.compiled, e.moduleConfig())
+}
+
+func (e *Engine) moduleConfig() wazero.ModuleConfig {
+	id := e.instance.Add(1)
+	return wazero.NewModuleConfig().
+		WithName(fmt.Sprintf("securejsonnet-%d", id)).
+		WithStartFunctions("_initialize")
 }
 
 func (e *Engine) instantiateHostModule(ctx context.Context) error {

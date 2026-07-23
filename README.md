@@ -117,7 +117,7 @@ range, and never retain guest-memory views after returning.
 Jsonnet source is adversarial. Importers and capability implementations are
 trusted. Each evaluation:
 
-- instantiates and initializes a fresh anonymous WASI guest;
+- instantiates and initializes a fresh, uniquely named WASI guest;
 - uses a precompiled module but no shared guest state;
 - validates every ABI function, pointer, length, and integer conversion;
 - exposes no filesystem, environment, arguments, network, or inherited
