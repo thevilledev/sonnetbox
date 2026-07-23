@@ -16,7 +16,7 @@ concurrency:
 jobs:
   quality:
     name: Quality
-    runs-on: ubuntu-24.04
+    runs-on: avrea-ubuntu-latest-2-vcpu
     timeout-minutes: 10
     permissions:
       contents: read
@@ -40,7 +40,7 @@ jobs:
 
   test-minimum:
     name: Test (minimum Go)
-    runs-on: ubuntu-24.04
+    runs-on: avrea-ubuntu-latest-2-vcpu
     timeout-minutes: 10
     permissions:
       contents: read
@@ -59,7 +59,7 @@ jobs:
 
   test-current:
     name: Test and coverage (current Go)
-    runs-on: ubuntu-24.04
+    runs-on: avrea-ubuntu-latest-2-vcpu
     timeout-minutes: 10
     permissions:
       contents: read
@@ -78,7 +78,7 @@ jobs:
 
   race:
     name: Race
-    runs-on: ubuntu-24.04
+    runs-on: avrea-ubuntu-latest-2-vcpu
     timeout-minutes: 10
     permissions:
       contents: read
@@ -97,7 +97,7 @@ jobs:
 
   wasm-portability:
     name: Wasm and portability
-    runs-on: ubuntu-24.04
+    runs-on: avrea-ubuntu-latest-2-vcpu
     timeout-minutes: 10
     permissions:
       contents: read
@@ -116,7 +116,7 @@ jobs:
 
   fuzz-smoke:
     name: Fuzz smoke
-    runs-on: ubuntu-24.04
+    runs-on: avrea-ubuntu-latest-2-vcpu
     timeout-minutes: 10
     permissions:
       contents: read
@@ -135,7 +135,7 @@ jobs:
 
   vulnerability:
     name: Vulnerability scan
-    runs-on: ubuntu-24.04
+    runs-on: avrea-ubuntu-latest-2-vcpu
     timeout-minutes: 10
     permissions:
       contents: read
@@ -149,7 +149,7 @@ jobs:
 
   workflow-security:
     name: Workflow security
-    runs-on: ubuntu-24.04
+    runs-on: avrea-ubuntu-latest-2-vcpu
     timeout-minutes: 5
     permissions:
       contents: read
@@ -159,16 +159,10 @@ jobs:
         with:
           persist-credentials: false
       - name: Audit workflows with zizmor
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          archive="${RUNNER_TEMP}/zizmor.tar.gz"
-          curl --proto '=https' --tlsv1.2 --fail --location \
-            --silent --show-error --output "${archive}" \
-            'https://github.com/zizmorcore/zizmor/releases/download/v1.28.0/zizmor-x86_64-unknown-linux-gnu.tar.gz'
-          printf '%s  %s\n' \
-            'e87b67160194884e375a46a12c57ccc904f762b53845f254fab7f17d98809c09' \
-            "${archive}" | sha256sum --check -
-          tar -xzf "${archive}" -C "${RUNNER_TEMP}"
-          "${RUNNER_TEMP}/zizmor" --persona=pedantic --format=github \
-            --collect=all .
+        uses: zizmorcore/zizmor-action@6599ee8b7a49aef6a770f63d261d214911a7ce02 # v0.6.0
+        with:
+          advanced-security: false
+          annotations: true
+          collect: all
+          persona: pedantic
+          version: v1.28.0
