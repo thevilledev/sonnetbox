@@ -88,8 +88,8 @@ wasm-check:
 	shasum -a 256 -c $(WASM_CHECKSUM)
 
 no-cgo:
-	@test -z "$$(CGO_ENABLED=1 GOTOOLCHAIN=local $(GO) list -deps \
-		-f '{{if .CgoFiles}}{{.ImportPath}}{{end}}' ./... | sed '/^$$/d')"
+	CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) test -run='^$$' -count=1 \
+		-timeout=$(TEST_TIMEOUT) ./...
 
 check: fmt-check mod-check lint coverage no-cgo wasm-check
 
