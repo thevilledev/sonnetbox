@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -146,11 +147,11 @@ func (w *WorkspaceImporter) Import(
 	}
 	if importedFrom != "" {
 		if err := validateVirtualPath(importedFrom); err != nil {
-			return "", nil, fmt.Errorf("%w: invalid importing path: %v", ErrImportDenied, err)
+			return "", nil, fmt.Errorf("%w: invalid importing path: %w", ErrImportDenied, err)
 		}
 	}
 	if err := validateImportPath(importedPath); err != nil {
-		return "", nil, fmt.Errorf("%w: %v", ErrImportDenied, err)
+		return "", nil, fmt.Errorf("%w: %w", ErrImportDenied, err)
 	}
 
 	base := ""
@@ -164,8 +165,8 @@ func (w *WorkspaceImporter) Import(
 	if candidate, err := resolveAgainstVirtualDirectory(base, importedPath); err == nil {
 		candidates = append(candidates, candidate)
 	}
-	for i := len(w.libraryPaths) - 1; i >= 0; i-- {
-		candidate, err := resolveAgainstVirtualDirectory(w.libraryPaths[i], importedPath)
+	for _, libraryPath := range slices.Backward(w.libraryPaths) {
+		candidate, err := resolveAgainstVirtualDirectory(libraryPath, importedPath)
 		if err == nil {
 			candidates = append(candidates, candidate)
 		}
@@ -194,11 +195,11 @@ func (w *WorkspaceImporter) Import(
 func resolveVirtualImport(importedFrom, importedPath string) (string, error) {
 	if importedFrom != "" {
 		if err := validateVirtualPath(importedFrom); err != nil {
-			return "", fmt.Errorf("%w: invalid importing path: %v", ErrImportDenied, err)
+			return "", fmt.Errorf("%w: invalid importing path: %w", ErrImportDenied, err)
 		}
 	}
 	if err := validateImportPath(importedPath); err != nil {
-		return "", fmt.Errorf("%w: %v", ErrImportDenied, err)
+		return "", fmt.Errorf("%w: %w", ErrImportDenied, err)
 	}
 	base := ""
 	if importedFrom != "" {
@@ -209,7 +210,7 @@ func resolveVirtualImport(importedFrom, importedPath string) (string, error) {
 	}
 	canonical, err := resolveAgainstVirtualDirectory(base, importedPath)
 	if err != nil {
-		return "", fmt.Errorf("%w: %v", ErrImportDenied, err)
+		return "", fmt.Errorf("%w: %w", ErrImportDenied, err)
 	}
 	return canonical, nil
 }
