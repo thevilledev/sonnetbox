@@ -1,5 +1,5 @@
 GO ?= go
-GO_TOOLCHAIN ?= go1.24.5
+GO_TOOLCHAIN ?= go1.26.5
 WASM := internal/guestblob/securejsonnet.wasm
 WASM_CHECKSUM := internal/guestblob/securejsonnet.wasm.sha256
 GUEST := ./cmd/securejsonnet-guest
@@ -8,7 +8,8 @@ WASM_FLAGS := -trimpath -buildvcs=false -ldflags=-buildid= -buildmode=c-shared
 .PHONY: wasm wasm-check fmt-check test race fuzz no-cgo check
 
 wasm:
-	@tmp="$$(mktemp)"; \
+	@set -eu; \
+	tmp="$$(mktemp)"; \
 	trap 'rm -f "$$tmp"' EXIT; \
 	CGO_ENABLED=0 GOOS=wasip1 GOARCH=wasm GOTOOLCHAIN=$(GO_TOOLCHAIN) \
 		$(GO) build $(WASM_FLAGS) -o "$$tmp" $(GUEST); \
@@ -16,7 +17,8 @@ wasm:
 	shasum -a 256 $(WASM) > $(WASM_CHECKSUM)
 
 wasm-check:
-	@tmp="$$(mktemp)"; \
+	@set -eu; \
+	tmp="$$(mktemp)"; \
 	trap 'rm -f "$$tmp"' EXIT; \
 	CGO_ENABLED=0 GOOS=wasip1 GOARCH=wasm GOTOOLCHAIN=$(GO_TOOLCHAIN) \
 		$(GO) build $(WASM_FLAGS) -o "$$tmp" $(GUEST); \
