@@ -67,7 +67,7 @@ fuzz:
 		-fuzztime=$(FUZZ_TIME) ./internal/protocol
 
 fuzz-smoke:
-	$(MAKE) fuzz FUZZ_TIME=5s
+	$(MAKE) fuzz FUZZ_TIME=10000x
 
 wasm:
 	@set -eu; \
