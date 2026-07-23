@@ -116,6 +116,34 @@ func TestDifferentialCommonVMOperations(t *testing.T) {
 		}
 	})
 
+	t.Run("string output and newline", func(t *testing.T) {
+		nativeVM := nativejsonnet.MakeVM()
+		secureVM := newTestVM(t, engine)
+		nativeVM.SetTraceOut(nil)
+		secureVM.SetTraceOut(nil)
+		nativeVM.StringOutput = true
+		secureVM.StringOutput = true
+		nativeVM.OutputNewline = false
+		secureVM.OutputNewline = false
+
+		const source = `"hello"`
+		want, err := nativeVM.EvaluateAnonymousSnippet("string.jsonnet", source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := secureVM.EvaluateAnonymousSnippet(
+			context.Background(),
+			"string.jsonnet",
+			source,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("string output differs\nwant: %q\ngot: %q", want, got)
+		}
+	})
+
 	t.Run("file and importer adapter", func(t *testing.T) {
 		memory := &nativejsonnet.MemoryImporter{Data: map[string]nativejsonnet.Contents{
 			"main.jsonnet":  nativejsonnet.MakeContents(`import "value.jsonnet"`),
