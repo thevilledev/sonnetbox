@@ -20,6 +20,14 @@ func TestMapImporterValidationAndCopy(t *testing.T) {
 	if canonical != "lib/value.jsonnet" || string(content) != `{value: 1}` {
 		t.Fatalf("unexpected import: %q %q", canonical, content)
 	}
+	content[0] = 'x'
+	_, content, err = importer.Import(context.Background(), "lib/main.jsonnet", "value.jsonnet")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != `{value: 1}` {
+		t.Fatalf("importer returned mutable content: %q", content)
+	}
 
 	for _, invalid := range []string{"", "/etc/passwd", "../secret", "a/../b", "./a", "a//b", `a\b`} {
 		if _, err := NewMapImporter(map[string][]byte{invalid: nil}); err == nil {

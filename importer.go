@@ -11,10 +11,14 @@ import (
 
 var errImportDenied = errors.New("import denied")
 
+// MapImporter resolves imports from an immutable map of canonical virtual
+// paths.
 type MapImporter struct {
 	files map[string][]byte
 }
 
+// NewMapImporter returns an immutable virtual-file importer. It validates all
+// paths and copies all content before returning.
 func NewMapImporter(files map[string][]byte) (*MapImporter, error) {
 	copied := make(map[string][]byte, len(files))
 	for name, content := range files {
@@ -26,6 +30,7 @@ func NewMapImporter(files map[string][]byte) (*MapImporter, error) {
 	return &MapImporter{files: copied}, nil
 }
 
+// Import implements Importer.
 func (m *MapImporter) Import(
 	ctx context.Context,
 	importedFrom string,
@@ -58,7 +63,7 @@ func (m *MapImporter) Import(
 	if !ok {
 		return "", nil, fmt.Errorf("%w: %q is missing", errImportDenied, canonical)
 	}
-	return canonical, content, nil
+	return canonical, append([]byte(nil), content...), nil
 }
 
 func validateVirtualPath(name string) error {
