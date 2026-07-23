@@ -1,6 +1,6 @@
 # Migrating from go-jsonnet
 
-`securejsonnet` replaces the execution boundary around untrusted Jsonnet. It
+`wasmnet` replaces the execution boundary around untrusted Jsonnet. It
 does not try to replace every parser, AST, formatter, or editor feature in
 go-jsonnet.
 
@@ -31,25 +31,25 @@ output, err := vm.EvaluateFile("jsonnet/apps/main.jsonnet")
 The compatibility path keeps the same conceptual flow:
 
 ```go
-engine, err := securejsonnet.NewEngine(
+engine, err := wasmnet.NewEngine(
 	context.Background(),
-	securecompat.RecommendedEngineConfig(),
+	wasmcompat.RecommendedEngineConfig(),
 )
 if err != nil {
 	return err
 }
 defer engine.Close(context.Background())
 
-workspace, err := securejsonnet.NewWorkspaceImporter(
+workspace, err := wasmnet.NewWorkspaceImporter(
 	"jsonnet",
-	securejsonnet.WithLibraryPaths("vendor"),
+	wasmnet.WithLibraryPaths("vendor"),
 )
 if err != nil {
 	return err
 }
 defer workspace.Close()
 
-vm, err := securecompat.New(engine)
+vm, err := wasmcompat.New(engine)
 if err != nil {
 	return err
 }
@@ -65,8 +65,8 @@ The imports are:
 
 ```go
 import (
-	securejsonnet "github.com/thevilledev/wasmnet"
-	securecompat "github.com/thevilledev/wasmnet/compat/gojsonnet"
+	"github.com/thevilledev/wasmnet"
+	wasmcompat "github.com/thevilledev/wasmnet/compat/gojsonnet"
 )
 ```
 
@@ -98,7 +98,7 @@ The compatibility VM is intentionally not source-compatible: every evaluation
 takes a context. That context is the cancellation and CPU-budget boundary and
 should not be hidden behind `context.Background()` in request-serving code.
 
-`EvaluateSnippet` and its multi/stream variants are securejsonnet extensions.
+`EvaluateSnippet` and its multi/stream variants are wasmnet extensions.
 Unlike go-jsonnet's anonymous method, they resolve relative imports from the
 inline snippet's `Filename`.
 
@@ -117,8 +117,8 @@ that version. Repository differential tests exercise:
 - normal, string, and newline settings; and
 - single, multi-file, and stream manifestation.
 
-Use `securejsonnet.Version()` to record the evaluator and ABI in diagnostics.
-Pin and upgrade securejsonnet deliberately if output stability matters.
+Use `wasmnet.Version()` to record the evaluator and ABI in diagnostics.
+Pin and upgrade wasmnet deliberately if output stability matters.
 
 The following are not parity guarantees:
 
@@ -157,7 +157,7 @@ remember that importer code runs with the host process's authority.
 migration. It deliberately rejects `*jsonnet.FileImporter`; wrapping an unsafe
 filesystem importer would defeat the isolation boundary. The old importer API
 does not accept a context, so an adapted importer cannot be interrupted while
-its `Import` method is running. Prefer a core securejsonnet importer for
+its `Import` method is running. Prefer a core wasmnet importer for
 request-serving code.
 
 ### Native functions
@@ -186,12 +186,12 @@ values into each request. Like go-jsonnet's VM, it must not be mutated or
 evaluated concurrently.
 
 The core `Engine` is concurrency-safe. Prefer constructing a complete
-`securejsonnet.Request` at the call site when different tenants or jobs need
+`wasmnet.Request` at the call site when different tenants or jobs need
 different variables, imports, capabilities, or budgets.
 
 ### Errors
 
-Do not branch on go-jsonnet error strings. Securejsonnet exposes typed errors
+Do not branch on go-jsonnet error strings. Wasmnet exposes typed errors
 for invalid requests, denied imports, importer failures, capability failures,
 limits, cancellation, guest traps, Jsonnet evaluation, ABI failures, and a
 closed engine. Use `errors.As` and `errors.Is`, including
@@ -250,7 +250,7 @@ afford it. Compare successful output bytes, but classify expected policy
 rejections separately from semantic mismatches. Native functions used during
 shadow evaluation must still be pure.
 
-Finally, route untrusted evaluation only through securejsonnet, alert on
+Finally, route untrusted evaluation only through wasmnet, alert on
 limits and cancellation, and tune concurrency from queue duration and memory
 measurements. Keep the native evaluator only for trusted tooling that needs
 unsupported APIs.

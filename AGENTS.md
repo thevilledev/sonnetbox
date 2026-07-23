@@ -35,8 +35,8 @@ stale artifact and is not a substitute for `make wasm`.
 If rebuilding changes the guest, include both of these generated files in the
 same commit as the source change:
 
-- `internal/guestblob/securejsonnet.wasm`
-- `internal/guestblob/securejsonnet.wasm.sha256`
+- `internal/guestblob/wasmnet.wasm`
+- `internal/guestblob/wasmnet.wasm.sha256`
 
 Never commit a Go code or dependency change until `make wasm` has run and the
 resulting blob and checksum have been inspected.

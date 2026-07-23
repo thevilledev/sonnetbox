@@ -8,11 +8,11 @@ import (
 
 	nativejsonnet "github.com/google/go-jsonnet"
 	"github.com/google/go-jsonnet/ast"
-	securejsonnet "github.com/thevilledev/wasmnet"
+	"github.com/thevilledev/wasmnet"
 )
 
 func TestDifferentialCommonVMOperations(t *testing.T) {
-	engine, err := securejsonnet.NewEngine(
+	engine, err := wasmnet.NewEngine(
 		context.Background(),
 		RecommendedEngineConfig(),
 	)
@@ -212,7 +212,7 @@ func TestAdaptImporterRejectsFileImporter(t *testing.T) {
 	}
 }
 
-func newTestVM(t *testing.T, engine *securejsonnet.Engine) *VM {
+func newTestVM(t *testing.T, engine *wasmnet.Engine) *VM {
 	t.Helper()
 	vm, err := New(engine)
 	if err != nil {

@@ -1,6 +1,6 @@
 //go:build !race
 
-package securejsonnet
+package wasmnet
 
 import "context"
 

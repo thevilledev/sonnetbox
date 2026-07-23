@@ -8,6 +8,6 @@ id = "regenerate-wasm"
 name = "regenerate embedded WASM"
 language = "system"
 entry = "make wasm"
-files = '^(?:.*\.go|go\.(?:mod|sum)|\.go-version|Makefile|internal/guestblob/securejsonnet\.wasm(?:\.sha256)?)$'
+files = '^(?:.*\.go|go\.(?:mod|sum)|\.go-version|Makefile|internal/guestblob/wasmnet\.wasm(?:\.sha256)?)$'
 pass_filenames = false
 stages = ["pre-commit"]

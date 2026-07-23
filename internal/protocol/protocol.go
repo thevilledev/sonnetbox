@@ -13,7 +13,7 @@ import (
 )
 
 // ABIVersion is the current host-to-guest ABI version.
-const ABIVersion uint32 = 5
+const ABIVersion uint32 = 6
 
 // InputMode selects whether source is supplied inline or loaded through the
 // importer.

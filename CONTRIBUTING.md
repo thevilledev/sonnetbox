@@ -15,7 +15,7 @@ prek install
 
 The hook rebuilds the embedded Wasm guest when staged Go sources, module
 metadata, build settings, or guest artifacts change. If the rebuild updates
-the guest, stage `internal/guestblob/securejsonnet.wasm` and its `.sha256`
+the guest, stage `internal/guestblob/wasmnet.wasm` and its `.sha256`
 file, then commit again.
 
 Before sending a change, run:
@@ -42,7 +42,7 @@ make wasm
 make wasm-check
 ```
 
-Commit both `internal/guestblob/securejsonnet.wasm` and its `.sha256` file.
+Commit both `internal/guestblob/wasmnet.wasm` and its `.sha256` file.
 The build is reproducible with the toolchain pinned in `.go-version`.
 
 ## Changes and reviews
