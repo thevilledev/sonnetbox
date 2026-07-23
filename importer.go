@@ -40,12 +40,12 @@ func (m *MapImporter) Import(
 		return "", nil, err
 	}
 	if err := validateVirtualPath(importedPath); err != nil {
-		return "", nil, fmt.Errorf("%w: %v", errImportDenied, err)
+		return "", nil, fmt.Errorf("%w: %v", errImportDenied, err) //nolint:errorlint // Only the policy sentinel is public.
 	}
 	base := ""
 	if importedFrom != "" {
 		if err := validateVirtualPath(importedFrom); err != nil {
-			return "", nil, fmt.Errorf("%w: invalid importer path: %v", errImportDenied, err)
+			return "", nil, fmt.Errorf("%w: invalid importer path: %v", errImportDenied, err) //nolint:errorlint // Only the policy sentinel is public.
 		}
 		base = path.Dir(importedFrom)
 		if base == "." {
@@ -57,7 +57,7 @@ func (m *MapImporter) Import(
 		canonical = path.Join(base, importedPath)
 	}
 	if err := validateVirtualPath(canonical); err != nil {
-		return "", nil, fmt.Errorf("%w: %v", errImportDenied, err)
+		return "", nil, fmt.Errorf("%w: %v", errImportDenied, err) //nolint:errorlint // Only the policy sentinel is public.
 	}
 	content, ok := m.files[canonical]
 	if !ok {
@@ -85,7 +85,7 @@ func validateVirtualPath(name string) error {
 	if path.Clean(name) != name {
 		return errors.New("path is not canonical")
 	}
-	for _, part := range strings.Split(name, "/") {
+	for part := range strings.SplitSeq(name, "/") {
 		if part == "." || part == ".." || part == "" {
 			return errors.New("dot, traversal, and empty segments are not allowed")
 		}

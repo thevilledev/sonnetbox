@@ -1,3 +1,4 @@
+// Package guestblob embeds the reproducibly built Jsonnet WASI guest.
 package guestblob
 
 import _ "embed"

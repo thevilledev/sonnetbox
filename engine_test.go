@@ -451,7 +451,7 @@ func TestWASMMemoryExhaustion(t *testing.T) {
 
 func TestFreshInstancesAndConcurrentEvaluation(t *testing.T) {
 	engine := newTestEngine(t, EngineConfig{})
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		result, err := engine.Evaluate(context.Background(), Request{
 			Source:  `std.extVar("value")`,
 			ExtVars: map[string]string{"value": fmt.Sprint(i)},
@@ -465,7 +465,7 @@ func TestFreshInstancesAndConcurrentEvaluation(t *testing.T) {
 	const count = 16
 	var wg sync.WaitGroup
 	errs := make(chan error, count)
-	for i := 0; i < count; i++ {
+	for i := range count {
 		wg.Add(1)
 		go func(value int) {
 			defer wg.Done()
@@ -492,17 +492,14 @@ func TestFreshInstancesAndConcurrentEvaluation(t *testing.T) {
 }
 
 func TestClose(t *testing.T) {
-	engine, err := NewEngine(context.Background(), EngineConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
+	engine := newTestEngine(t, EngineConfig{})
 	if err := engine.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if err := engine.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	_, err = engine.Evaluate(context.Background(), Request{Source: `{}`})
+	_, err := engine.Evaluate(context.Background(), Request{Source: `{}`})
 	var closed *EngineClosedError
 	if !errors.As(err, &closed) {
 		t.Fatalf("expected EngineClosedError, got %T: %v", err, err)
@@ -702,7 +699,7 @@ func FuzzDecodeHostPayloads(f *testing.F) {
 	f.Add([]byte(`{"from":"","path":"x.jsonnet"}`))
 	f.Add([]byte(`{"name":"query","args":[1,true,null]}`))
 	f.Add([]byte{})
-	f.Fuzz(func(t *testing.T, payload []byte) {
+	f.Fuzz(func(_ *testing.T, payload []byte) {
 		var importRequest protocol.ImportRequest
 		_ = protocol.DecodeJSON(payload, &importRequest)
 		var capabilityRequest protocol.CapabilityRequest
@@ -714,7 +711,7 @@ func FuzzDecodeHostPayloads(f *testing.F) {
 
 func newTestEngine(t *testing.T, config EngineConfig) *Engine {
 	t.Helper()
-	engine, err := NewEngine(context.Background(), config)
+	engine, err := newEngineForTest(context.Background(), config)
 	if err != nil {
 		t.Fatal(err)
 	}

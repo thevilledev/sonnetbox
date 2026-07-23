@@ -1,5 +1,7 @@
 # securejsonnet
 
+[![CI](https://github.com/thevilledev/wasmnet/actions/workflows/ci.yml/badge.svg)](https://github.com/thevilledev/wasmnet/actions/workflows/ci.yml)
+
 `securejsonnet` evaluates untrusted Jsonnet in a fresh WebAssembly sandbox. It
 uses the pure-Go
 [go-jsonnet](https://github.com/google/go-jsonnet) evaluator inside a Go WASI
@@ -12,6 +14,13 @@ The checked-in WASM guest is built with the current supported toolchain pinned
 in the Makefile.
 
 ## Example
+
+The module path is `github.com/thevilledev/wasmnet`, while the imported package
+name is `securejsonnet`:
+
+```go
+import securejsonnet "github.com/thevilledev/wasmnet"
+```
 
 ```go
 ctx := context.Background()
@@ -157,3 +166,13 @@ make wasm-check
 The build uses `CGO_ENABLED=0`, `GOOS=wasip1`, `GOARCH=wasm`,
 `-buildmode=c-shared`, `-trimpath`, and a cleared build ID. CI rebuilds the
 module and verifies both its bytes and checked-in SHA-256 checksum.
+
+## Development
+
+The supported development toolchain is pinned in `.go-version`. Run
+`make check` for formatting, module, lint, coverage, portability, and Wasm
+reproducibility checks. Race and fuzz smoke checks are available through
+`make race` and `make fuzz-smoke`.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the complete local workflow and
+[SECURITY.md](SECURITY.md) for private vulnerability reporting.

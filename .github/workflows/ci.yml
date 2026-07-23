@@ -2,25 +2,167 @@ name: CI
 
 on:
   push:
+    branches:
+      - main
   pull_request:
+  workflow_dispatch:
 
-permissions:
-  contents: read
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
+  quality:
+    name: Quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          go-version: 1.26.5
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: .go-version
           cache-dependency-path: go.sum
-      - run: make fmt-check
-      - run: go vet ./...
-      - run: make test
-      - run: make race
-      - run: make no-cgo
-      - run: make wasm-check
-      - run: go test -run='^$' -fuzz=FuzzDecodeHostPayloads -fuzztime=5s .
-      - run: go test -run='^$' -fuzz=FuzzDecodeImportResponse -fuzztime=5s ./internal/protocol
+      - name: Install golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version-file: .golangci-lint-version
+          install-only: true
+      - name: Check formatting, modules, and lint
+        run: make fmt-check mod-check lint
+
+  test-minimum:
+    name: Test (minimum Go)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up minimum Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 1.25.x
+          cache-dependency-path: go.sum
+      - name: Run tests
+        run: make test
+
+  test-current:
+    name: Test and coverage (current Go)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up current Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: .go-version
+          cache-dependency-path: go.sum
+      - name: Run tests with coverage floor
+        run: make coverage
+
+  race:
+    name: Race
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: .go-version
+          cache-dependency-path: go.sum
+      - name: Run race detector
+        run: make race
+
+  wasm-portability:
+    name: Wasm and portability
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: .go-version
+          cache-dependency-path: go.sum
+      - name: Check Cgo-free build and embedded Wasm
+        run: make no-cgo wasm-check
+
+  fuzz-smoke:
+    name: Fuzz smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: .go-version
+          cache-dependency-path: go.sum
+      - name: Run fuzz smoke tests
+        run: make fuzz-smoke
+
+  vulnerability:
+    name: Vulnerability scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Run govulncheck
+        uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
+        with:
+          go-version-file: .go-version
+          go-package: ./...
+          output-format: text
+
+  workflow-security:
+    name: Workflow security
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Audit workflows with zizmor
+        uses: zizmorcore/zizmor-action@6599ee8b7a49aef6a770f63d261d214911a7ce02 # v0.6.0
+        with:
+          advanced-security: false
+          annotations: true
+          online-audits: true
+          persona: pedantic
+          version: 1.28.0

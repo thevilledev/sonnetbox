@@ -79,8 +79,22 @@ type invocationState struct {
 // NewEngine compiles the embedded guest once and prepares a concurrent-safe
 // isolated Jsonnet engine.
 func NewEngine(ctx context.Context, config EngineConfig) (*Engine, error) {
+	return newEngine(ctx, config, wazero.NewRuntimeConfig())
+}
+
+func newEngine(
+	ctx context.Context,
+	config EngineConfig,
+	runtimeConfig wazero.RuntimeConfig,
+) (*Engine, error) {
 	if ctx == nil {
 		return nil, &InvalidRequestError{Field: "context", Err: errors.New("context is nil")}
+	}
+	if runtimeConfig == nil {
+		return nil, &InvalidRequestError{
+			Field: "runtime config",
+			Err:   errors.New("runtime config is nil"),
+		}
 	}
 	effective, err := normalizeConfig(config)
 	if err != nil {
@@ -94,16 +108,17 @@ func NewEngine(ctx context.Context, config EngineConfig) (*Engine, error) {
 		}
 	}
 
-	runtimeConfig := wazero.NewRuntimeConfig().
+	runtimeConfig = runtimeConfig.
 		WithMemoryLimitPages(uint32(pages)).
 		WithCloseOnContextDone(true)
 	r := wazero.NewRuntimeWithConfig(ctx, runtimeConfig)
+	cleanupCtx := context.WithoutCancel(ctx)
 	cleanup := true
-	defer func() {
+	defer func(cleanupCtx context.Context) {
 		if cleanup {
-			_ = r.Close(context.Background())
+			_ = r.Close(cleanupCtx)
 		}
-	}()
+	}(cleanupCtx)
 
 	if _, err := wasi_snapshot_preview1.Instantiate(ctx, r); err != nil {
 		return nil, &ABIError{Err: fmt.Errorf("instantiate WASI: %w", err)}
@@ -117,7 +132,7 @@ func NewEngine(ctx context.Context, config EngineConfig) (*Engine, error) {
 		return nil, &ABIError{Err: fmt.Errorf("compile embedded guest: %w", err)}
 	}
 	if err := validateCompiledModule(compiled); err != nil {
-		_ = compiled.Close(context.Background())
+		_ = compiled.Close(cleanupCtx)
 		return nil, &ABIError{Err: fmt.Errorf("validate embedded guest: %w", err)}
 	}
 	e.compiled = compiled
@@ -127,7 +142,7 @@ func NewEngine(ctx context.Context, config EngineConfig) (*Engine, error) {
 		return nil, &ABIError{Err: fmt.Errorf("instantiate ABI probe: %w", err)}
 	}
 	version, err := callU32(ctx, probe, "securejsonnet_abi_version")
-	_ = probe.Close(context.Background())
+	_ = probe.Close(cleanupCtx)
 	if err != nil {
 		return nil, &ABIError{Err: err}
 	}
@@ -177,20 +192,24 @@ func (e *Engine) Evaluate(ctx context.Context, request Request) (Result, error) 
 	if err != nil {
 		return Result{}, e.runtimeError(ctx, "initialize", err)
 	}
-	defer mod.Close(context.Background())
+	cleanupCtx := context.WithoutCancel(callCtx)
+	defer func(cleanupCtx context.Context) {
+		_ = mod.Close(cleanupCtx)
+	}(cleanupCtx)
 
 	alloc := mod.ExportedFunction("securejsonnet_request_alloc")
 	if alloc == nil {
 		return Result{}, &ABIError{Err: errors.New("missing securejsonnet_request_alloc export")}
 	}
-	values, err := alloc.Call(callCtx, uint64(uint32(len(wireRequest))))
+	requestLength := uint32(len(wireRequest)) //nolint:gosec // prepareRequest bounds this length to uint32.
+	values, err := alloc.Call(callCtx, uint64(requestLength))
 	if err != nil {
 		return Result{}, e.runtimeError(ctx, "request allocation", err)
 	}
 	if len(values) != 1 || values[0] > math.MaxUint32 || values[0] == 0 {
 		return Result{}, &ABIError{Err: errors.New("guest returned invalid request pointer")}
 	}
-	requestPtr := uint32(values[0])
+	requestPtr := uint32(values[0]) //nolint:gosec // the preceding check rejects values outside uint32.
 	if ok := mod.Memory().Write(requestPtr, wireRequest); !ok {
 		return Result{}, &ABIError{Err: errors.New("request pointer is outside guest memory")}
 	}
@@ -209,7 +228,7 @@ func (e *Engine) Evaluate(ctx context.Context, request Request) (Result, error) 
 	if len(values) != 1 || values[0] > math.MaxUint32 {
 		return Result{}, &ABIError{Err: errors.New("guest returned invalid evaluation status")}
 	}
-	status := uint32(values[0])
+	status := uint32(values[0]) //nolint:gosec // the preceding check rejects values outside uint32.
 	if hostErr := state.error(); status == protocol.EvalHostError && hostErr != nil {
 		return Result{}, hostErr
 	}
@@ -814,7 +833,10 @@ func prepareRequest(request Request, config EngineConfig) ([]byte, Request, erro
 			}
 		}
 		if capability.Call == nil {
-			return nil, Request{}, &InvalidRequestError{Field: "Capabilities." + name, Err: errors.New("Call is nil")}
+			return nil, Request{}, &InvalidRequestError{
+				Field: "Capabilities." + name,
+				Err:   errors.New("Call is nil"), //nolint:staticcheck // Preserve the existing public error text.
+			}
 		}
 		seen := make(map[string]struct{}, len(capability.Params))
 		for _, param := range capability.Params {
@@ -899,7 +921,7 @@ func callU32(ctx context.Context, mod api.Module, name string) (uint32, error) {
 	if len(values) != 1 || values[0] > math.MaxUint32 {
 		return 0, fmt.Errorf("%s returned invalid uint32", name)
 	}
-	return uint32(values[0]), nil
+	return uint32(values[0]), nil //nolint:gosec // the preceding check rejects values outside uint32.
 }
 
 func readHostRequest(mod api.Module, ptr, length, limit uint32) ([]byte, error) {
@@ -975,7 +997,8 @@ func writeHostResponse(response []byte, status uint32, payload []byte) uint64 {
 		payload = payload[:len(response)]
 	}
 	copy(response, payload)
-	return protocol.Pack(status, uint32(len(payload)))
+	payloadLength := uint32(len(payload)) //nolint:gosec // payload cannot exceed the uint32-sized guest buffer.
+	return protocol.Pack(status, payloadLength)
 }
 
 func validUTF8Prefix(payload []byte, limit int) []byte {

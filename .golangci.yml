@@ -1,0 +1,88 @@
+version: "2"
+
+run:
+  timeout: 5m
+  relative-path-mode: gomod
+  tests: true
+  modules-download-mode: readonly
+  allow-parallel-runners: true
+  go: "1.25"
+
+linters:
+  default: none
+  enable:
+    - asasalint
+    - bidichk
+    - containedctx
+    - contextcheck
+    - copyloopvar
+    - dupword
+    - durationcheck
+    - errcheck
+    - errchkjson
+    - errname
+    - errorlint
+    - exhaustive
+    - exptostd
+    - fatcontext
+    - gocheckcompilerdirectives
+    - gochecksumtype
+    - gocritic
+    - gomoddirectives
+    - goprintffuncname
+    - gosec
+    - govet
+    - inamedparam
+    - ineffassign
+    - makezero
+    - mirror
+    - misspell
+    - modernize
+    - musttag
+    - nakedret
+    - nilerr
+    - nilnesserr
+    - nolintlint
+    - predeclared
+    - reassign
+    - recvcheck
+    - revive
+    - staticcheck
+    - testableexamples
+    - thelper
+    - unconvert
+    - unparam
+    - unused
+    - usestdlibvars
+    - usetesting
+    - wastedassign
+    - whitespace
+  settings:
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+  exclusions:
+    generated: strict
+    warn-unused: true
+    rules:
+      - path: _test\.go
+        text: "G115:"
+        linters:
+          - gosec
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  exclusions:
+    generated: strict
+    warn-unused: true
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+output:
+  sort-order:
+    - file
+    - linter
