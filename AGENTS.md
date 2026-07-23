@@ -16,6 +16,31 @@ These instructions apply to the entire repository.
 Whenever either Go version changes, inspect `go.mod`, `.go-version`, the
 `test-minimum` workflow job, and the WASM build configuration together.
 
+## Rebuild the embedded WASM first
+
+After every change to Go code, `go.mod`, or `go.sum`, run:
+
+```sh
+make wasm
+```
+
+Run this before Go tests, `make check`, or `make ci` so all validation uses the
+fresh embedded guest. Do this even when a change appears host-only; let the
+deterministic build prove that the guest bytes are unchanged instead of
+guessing whether the changed package reaches the guest.
+
+`make wasm-check` only verifies the checked-in artifact. It does not update a
+stale artifact and is not a substitute for `make wasm`.
+
+If rebuilding changes the guest, include both of these generated files in the
+same commit as the source change:
+
+- `internal/guestblob/securejsonnet.wasm`
+- `internal/guestblob/securejsonnet.wasm.sha256`
+
+Never commit a Go code or dependency change until `make wasm` has run and the
+resulting blob and checksum have been inspected.
+
 ## Validation before pushing
 
 Treat `.github/workflows/ci.yml` as the source of truth for remote CI. Read it
