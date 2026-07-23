@@ -29,6 +29,8 @@ const (
 var (
 	request     []byte
 	result      []byte
+	trace       []byte
+	traceCut    bool
 	resultLimit = maxErrorBytes
 )
 
@@ -50,6 +52,8 @@ func abiVersion() uint32 {
 func requestAlloc(size uint32) uint32 {
 	request = nil
 	result = nil
+	trace = nil
+	traceCut = false
 	resultLimit = maxErrorBytes
 	if size == 0 || size > maxRequestAllocation {
 		return 0
@@ -82,8 +86,10 @@ func evaluate() (status uint32) {
 		req.Limits.MaxOutputBytes > maxOutputBytes ||
 		req.Limits.MaxHostRequestBytes == 0 ||
 		req.Limits.MaxHostResponseBytes == 0 ||
+		req.Limits.MaxTraceBytes == 0 ||
 		req.Limits.MaxHostRequestBytes > maxRequestAllocation ||
-		req.Limits.MaxHostResponseBytes > maxHostResponseAllocation {
+		req.Limits.MaxHostResponseBytes > maxHostResponseAllocation ||
+		req.Limits.MaxTraceBytes > maxOutputBytes {
 		setError("invalid_request", "guest limits must be positive and within ABI ceilings")
 		return protocol.EvalInvalidRequest
 	}
@@ -116,7 +122,12 @@ func evaluate() (status uint32) {
 	vm.StringOutput = req.StringOutput
 	vm.OutputNewline = req.OutputNewline
 	vm.Importer(bridge)
-	vm.SetTraceOut(io.Discard)
+	traceWriter := &boundedWriter{limit: int(req.Limits.MaxTraceBytes)}
+	if req.CaptureTrace {
+		vm.SetTraceOut(traceWriter)
+	} else {
+		vm.SetTraceOut(io.Discard)
+	}
 	for key, value := range req.ExtVars {
 		vm.ExtVar(key, value)
 	}
@@ -159,6 +170,10 @@ func evaluate() (status uint32) {
 	}
 
 	output, err := evaluateRequest(vm, req)
+	if req.CaptureTrace {
+		trace = traceWriter.data
+		traceCut = traceWriter.truncated
+	}
 	if err != nil {
 		if bridge.localLimit != nil {
 			setGuestError(*bridge.localLimit)
@@ -251,6 +266,44 @@ func resultPtr() uint32 {
 //go:wasmexport securejsonnet_result_len
 func resultLen() uint32 {
 	return uint32(len(result))
+}
+
+//go:wasmexport securejsonnet_trace_ptr
+func tracePtr() uint32 {
+	if len(trace) == 0 {
+		return 0
+	}
+	return uint32(uintptr(unsafe.Pointer(&trace[0])))
+}
+
+//go:wasmexport securejsonnet_trace_len
+func traceLen() uint32 {
+	return uint32(len(trace))
+}
+
+//go:wasmexport securejsonnet_trace_truncated
+func traceTruncated() uint32 {
+	if traceCut {
+		return 1
+	}
+	return 0
+}
+
+type boundedWriter struct {
+	data      []byte
+	limit     int
+	truncated bool
+}
+
+func (w *boundedWriter) Write(payload []byte) (int, error) {
+	remaining := w.limit - len(w.data)
+	if remaining < len(payload) {
+		w.truncated = true
+	}
+	if remaining > 0 {
+		w.data = append(w.data, payload[:min(remaining, len(payload))]...)
+	}
+	return len(payload), nil
 }
 
 type importResult struct {

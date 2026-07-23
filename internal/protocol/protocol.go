@@ -13,14 +13,16 @@ import (
 )
 
 // ABIVersion is the current host-to-guest ABI version.
-const ABIVersion uint32 = 3
+const ABIVersion uint32 = 4
 
 // InputMode selects whether source is supplied inline or loaded through the
 // importer.
 type InputMode uint8
 
 const (
+	// InputSnippet evaluates source supplied in EvaluationRequest.Source.
 	InputSnippet InputMode = iota
+	// InputFile loads EvaluationRequest.Filename through the importer.
 	InputFile
 )
 
@@ -28,8 +30,11 @@ const (
 type OutputMode uint8
 
 const (
+	// OutputSingle manifests one value.
 	OutputSingle OutputMode = iota
+	// OutputMulti manifests filename/output pairs.
 	OutputMulti
+	// OutputStream manifests an ordered document sequence.
 	OutputStream
 )
 
@@ -76,6 +81,7 @@ type Limits struct {
 	MaxStack             int    `json:"max_stack"`
 	MaxHostRequestBytes  uint32 `json:"max_host_request_bytes"`
 	MaxHostResponseBytes uint32 `json:"max_host_response_bytes"`
+	MaxTraceBytes        uint32 `json:"max_trace_bytes"`
 }
 
 // CapabilityDescriptor describes a registered native capability.
@@ -96,6 +102,7 @@ type EvaluationRequest struct {
 	Capabilities  map[string]CapabilityDescriptor `json:"capabilities,omitempty"`
 	StringOutput  bool                            `json:"string_output,omitempty"`
 	OutputNewline bool                            `json:"output_newline"`
+	CaptureTrace  bool                            `json:"capture_trace,omitempty"`
 	Limits        Limits                          `json:"limits"`
 }
 

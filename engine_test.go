@@ -146,6 +146,18 @@ func TestEngineConfigValidation(t *testing.T) {
 			name:   "response minimum",
 			config: EngineConfig{MaxHostResponseBytes: minHostResponseSize - 1},
 		},
+		{
+			name: "trace ceiling",
+			config: EngineConfig{
+				MaxTraceBytes: hardCeilings.MaxTraceBytes + 1,
+			},
+		},
+		{
+			name: "concurrency ceiling",
+			config: EngineConfig{
+				MaxConcurrentEvaluations: hardCeilings.MaxConcurrentEvaluations + 1,
+			},
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			_, err := normalizeConfig(test.config)
@@ -154,6 +166,132 @@ func TestEngineConfigValidation(t *testing.T) {
 				t.Fatalf("expected InvalidRequestError, got %T: %v", err, err)
 			}
 		})
+	}
+}
+
+func TestRequestLimitsInheritAndRejectEngineOverflow(t *testing.T) {
+	config, err := normalizeConfig(EngineConfig{
+		MaxSourceBytes:       1024,
+		MaxOutputBytes:       1024,
+		MaxHostResponseBytes: 1024,
+		MaxTraceBytes:        1024,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, normalized, err := prepareRequest(Request{
+		Source: `{}`,
+		Limits: RequestLimits{
+			MaxOutputBytes: 128,
+			MaxTraceBytes:  64,
+		},
+	}, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if normalized.Limits.MaxOutputBytes != 128 ||
+		normalized.Limits.MaxTraceBytes != 64 ||
+		normalized.Limits.MaxSourceBytes != 1024 {
+		t.Fatalf("unexpected normalized limits: %#v", normalized.Limits)
+	}
+
+	_, _, err = prepareRequest(Request{
+		Source: `{}`,
+		Limits: RequestLimits{MaxOutputBytes: 2048},
+	}, config)
+	var invalid *InvalidRequestError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("expected engine ceiling rejection, got %T: %v", err, err)
+	}
+}
+
+func TestPerRequestOutputLimit(t *testing.T) {
+	engine := newTestEngine(t, EngineConfig{MaxOutputBytes: 1024})
+	_, err := engine.Evaluate(context.Background(), Request{
+		Source: `"this output exceeds the request budget"`,
+		Limits: RequestLimits{MaxOutputBytes: 8},
+	})
+	var limit *LimitError
+	if !errors.As(err, &limit) || limit.Resource != "output" || limit.Limit != 8 {
+		t.Fatalf("expected request output limit, got %T: %v", err, err)
+	}
+}
+
+func TestTraceCaptureAndStatistics(t *testing.T) {
+	importer, err := NewMapImporter(map[string][]byte{
+		"value.jsonnet": []byte(`21`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := newTestEngine(t, EngineConfig{MaxTraceBytes: 1024})
+	result, err := engine.Evaluate(context.Background(), Request{
+		Source: `std.trace(std.repeat("x", 256),
+			std.native("double")(import "value.jsonnet"))`,
+		Importer: importer,
+		Capabilities: map[string]Capability{
+			"double": {
+				Params: []string{"value"},
+				Call: func(_ context.Context, args []any) (any, error) {
+					return args[0].(float64) * 2, nil
+				},
+			},
+		},
+		CaptureTrace: true,
+		Limits:       RequestLimits{MaxTraceBytes: 64},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertJSON(t, result.Output, float64(42))
+	if len(result.Trace) != 64 || !result.Stats.TraceTruncated {
+		t.Fatalf(
+			"trace bytes=%d truncated=%v",
+			len(result.Trace),
+			result.Stats.TraceTruncated,
+		)
+	}
+	if result.Stats.TraceBytes != uint32(len(result.Trace)) ||
+		result.Stats.ImportResolutions != 1 ||
+		result.Stats.ImportBytes != 2 ||
+		result.Stats.CapabilityCalls != 1 ||
+		result.Stats.ExecutionDuration <= 0 {
+		t.Fatalf("unexpected evaluation stats: %#v", result.Stats)
+	}
+}
+
+func TestConcurrencyLimitHonorsContext(t *testing.T) {
+	engine := newTestEngine(t, EngineConfig{MaxConcurrentEvaluations: 1})
+	started := make(chan struct{})
+	release := make(chan struct{})
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := engine.Evaluate(context.Background(), Request{
+			Source: `std.native("hold")()`,
+			Capabilities: map[string]Capability{
+				"hold": {
+					Call: func(context.Context, []any) (any, error) {
+						close(started)
+						<-release
+						return true, nil
+					},
+				},
+			},
+		})
+		firstDone <- err
+	}()
+	<-started
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	_, err := engine.Evaluate(ctx, Request{Source: `{}`})
+	var canceled *CancellationError
+	if !errors.As(err, &canceled) {
+		t.Fatalf("expected queued cancellation, got %T: %v", err, err)
+	}
+	close(release)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -573,6 +711,10 @@ func TestClose(t *testing.T) {
 }
 
 func TestABIVersionMismatch(t *testing.T) {
+	version := Version()
+	if version.Jsonnet != jsonnet.Version() || version.ABI != protocol.ABIVersion {
+		t.Fatalf("unexpected version info: %#v", version)
+	}
 	if err := validateABIVersion(protocol.ABIVersion); err != nil {
 		t.Fatalf("current ABI version was rejected: %v", err)
 	}
@@ -651,7 +793,7 @@ func TestGenericHostCallDispatchAndValidation(t *testing.T) {
 	}
 
 	state := &invocationState{
-		config: EngineConfig{
+		limits: RequestLimits{
 			MaxHostRequestBytes:  responseCap,
 			MaxHostResponseBytes: responseCap,
 			MaxCapabilityCalls:   1,
@@ -690,7 +832,7 @@ func TestGenericHostCallDispatchAndValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	badState := &invocationState{config: state.config}
+	badState := &invocationState{limits: state.limits}
 	badCtx := context.WithValue(context.Background(), invocationKey{}, badState)
 	packed = engine.hostCall(
 		badCtx,
@@ -726,7 +868,7 @@ func TestGenericHostCallDispatchAndValidation(t *testing.T) {
 		t.Fatal("write error request")
 	}
 	errorState := &invocationState{
-		config: state.config,
+		limits: state.limits,
 		request: Request{
 			Capabilities: map[string]Capability{
 				"fail": {

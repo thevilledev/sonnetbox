@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unicode/utf8"
 
 	"github.com/tetratelabs/wazero"
@@ -23,34 +24,39 @@ import (
 const (
 	wasmPageSize        = uint64(65536)
 	minHostResponseSize = uint32(256)
+	jsonnetVersion      = "v0.22.0"
 )
 
 var identifierPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 var defaultConfig = EngineConfig{
-	MaxMemoryBytes:       128 << 20,
-	MaxSourceBytes:       256 << 10,
-	MaxOutputBytes:       1 << 20,
-	MaxStack:             256,
-	MaxImports:           64,
-	MaxImportBytes:       256 << 10,
-	MaxTotalImportBytes:  2 << 20,
-	MaxCapabilityCalls:   128,
-	MaxHostRequestBytes:  512 << 10,
-	MaxHostResponseBytes: 512 << 10,
+	MaxMemoryBytes:           128 << 20,
+	MaxSourceBytes:           256 << 10,
+	MaxOutputBytes:           1 << 20,
+	MaxStack:                 256,
+	MaxImports:               64,
+	MaxImportBytes:           256 << 10,
+	MaxTotalImportBytes:      2 << 20,
+	MaxCapabilityCalls:       128,
+	MaxHostRequestBytes:      512 << 10,
+	MaxHostResponseBytes:     512 << 10,
+	MaxTraceBytes:            64 << 10,
+	MaxConcurrentEvaluations: 4,
 }
 
 var hardCeilings = EngineConfig{
-	MaxMemoryBytes:       1 << 30,
-	MaxSourceBytes:       16 << 20,
-	MaxOutputBytes:       64 << 20,
-	MaxStack:             4096,
-	MaxImports:           4096,
-	MaxImportBytes:       16 << 20,
-	MaxTotalImportBytes:  64 << 20,
-	MaxCapabilityCalls:   10000,
-	MaxHostRequestBytes:  16 << 20,
-	MaxHostResponseBytes: 32 << 20,
+	MaxMemoryBytes:           1 << 30,
+	MaxSourceBytes:           16 << 20,
+	MaxOutputBytes:           64 << 20,
+	MaxStack:                 4096,
+	MaxImports:               4096,
+	MaxImportBytes:           16 << 20,
+	MaxTotalImportBytes:      64 << 20,
+	MaxCapabilityCalls:       10000,
+	MaxHostRequestBytes:      16 << 20,
+	MaxHostResponseBytes:     32 << 20,
+	MaxTraceBytes:            4 << 20,
+	MaxConcurrentEvaluations: 1024,
 }
 
 // Engine owns a compiled guest module and instantiates a fresh guest for every
@@ -61,6 +67,7 @@ type Engine struct {
 	config   EngineConfig
 	runtime  wazero.Runtime
 	compiled wazero.CompiledModule
+	gate     chan struct{}
 	instance atomic.Uint64
 }
 
@@ -69,7 +76,7 @@ type invocationKey struct{}
 type invocationState struct {
 	mu              sync.Mutex
 	request         Request
-	config          EngineConfig
+	limits          RequestLimits
 	importCalls     uint32
 	importBytes     uint64
 	capabilityCalls uint32
@@ -123,7 +130,11 @@ func newEngine(
 	if _, err := wasi_snapshot_preview1.Instantiate(ctx, r); err != nil {
 		return nil, &ABIError{Err: fmt.Errorf("instantiate WASI: %w", err)}
 	}
-	e := &Engine{config: effective, runtime: r}
+	e := &Engine{
+		config:  effective,
+		runtime: r,
+		gate:    make(chan struct{}, effective.MaxConcurrentEvaluations),
+	}
 	if err := e.instantiateHostModule(ctx); err != nil {
 		return nil, &ABIError{Err: fmt.Errorf("instantiate host ABI: %w", err)}
 	}
@@ -159,6 +170,14 @@ func validateABIVersion(version uint32) error {
 	}
 	return &ABIError{
 		Err: fmt.Errorf("version %d does not match host version %d", version, protocol.ABIVersion),
+	}
+}
+
+// Version reports the embedded go-jsonnet evaluator and host/guest ABI.
+func Version() VersionInfo {
+	return VersionInfo{
+		Jsonnet: jsonnetVersion,
+		ABI:     protocol.ABIVersion,
 	}
 }
 
@@ -208,15 +227,31 @@ func (e *Engine) evaluate(
 		return Result{}, &EngineClosedError{}
 	}
 	config := e.config
-	compiled := e.compiled
-	r := e.runtime
 	e.mu.RUnlock()
 
 	wireRequest, normalized, err := prepareRequestMode(request, config, inputMode)
 	if err != nil {
 		return Result{}, err
 	}
-	state := &invocationState{request: normalized, config: config}
+
+	queueStarted := time.Now()
+	if err := e.acquire(ctx); err != nil {
+		return Result{}, err
+	}
+	queueDuration := time.Since(queueStarted)
+	defer e.release()
+
+	e.mu.RLock()
+	if e.closed {
+		e.mu.RUnlock()
+		return Result{}, &EngineClosedError{}
+	}
+	compiled := e.compiled
+	r := e.runtime
+	e.mu.RUnlock()
+
+	executionStarted := time.Now()
+	state := &invocationState{request: normalized, limits: normalized.Limits}
 	callCtx := context.WithValue(ctx, invocationKey{}, state)
 
 	mod, err := r.InstantiateModule(callCtx, compiled, e.moduleConfig())
@@ -272,18 +307,53 @@ func (e *Engine) evaluate(
 	if err != nil {
 		return Result{}, &ABIError{Err: err}
 	}
-	maxResult := config.MaxHostResponseBytes
+	maxResult := normalized.Limits.MaxHostResponseBytes
 	if status == protocol.EvalOK {
-		maxResult = config.MaxOutputBytes
+		maxResult = normalized.Limits.MaxOutputBytes
 	}
 	payload, err := readGuestResult(mod, ptr, length, maxResult)
 	if err != nil {
 		return Result{}, err
 	}
 	if status == protocol.EvalOK {
-		return decodeResult(normalized.OutputMode, payload)
+		result, err := decodeResult(normalized.OutputMode, payload)
+		if err != nil {
+			return Result{}, err
+		}
+		if normalized.CaptureTrace {
+			trace, truncated, err := readGuestTrace(
+				callCtx,
+				mod,
+				normalized.Limits.MaxTraceBytes,
+			)
+			if err != nil {
+				return Result{}, err
+			}
+			result.Trace = trace
+			result.Stats.TraceTruncated = truncated
+		}
+		result.Stats = state.stats(
+			queueDuration,
+			time.Since(executionStarted),
+			len(result.Trace),
+			result.Stats.TraceTruncated,
+		)
+		return result, nil
 	}
-	return Result{}, guestStatusError(status, payload, config)
+	return Result{}, guestStatusError(status, payload, normalized.Limits)
+}
+
+func (e *Engine) acquire(ctx context.Context) error {
+	select {
+	case e.gate <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return &CancellationError{Err: ctx.Err()}
+	}
+}
+
+func (e *Engine) release() {
+	<-e.gate
 }
 
 // Close rejects new evaluations and closes the runtime. It is idempotent and
@@ -336,13 +406,13 @@ func (e *Engine) hostCall(
 		mod,
 		responsePtr,
 		responseCap,
-		state.config.MaxHostResponseBytes,
+		state.limits.MaxHostResponseBytes,
 	)
 	if err != nil {
 		state.record(&ABIError{Err: err})
 		return protocol.Pack(protocol.HostMalformed, 0)
 	}
-	raw, err := readHostRequest(mod, requestPtr, requestLen, state.config.MaxHostRequestBytes)
+	raw, err := readHostRequest(mod, requestPtr, requestLen, state.limits.MaxHostRequestBytes)
 	if err != nil {
 		state.record(&ABIError{Err: err})
 		return protocol.Pack(protocol.HostMalformed, 0)
@@ -425,11 +495,11 @@ func (e *Engine) resolveImport(
 	}
 
 	state.mu.Lock()
-	if state.importCalls >= state.config.MaxImports {
+	if state.importCalls >= state.limits.MaxImports {
 		state.mu.Unlock()
 		limit := &LimitError{
 			Resource: "import count",
-			Limit:    uint64(state.config.MaxImports),
+			Limit:    uint64(state.limits.MaxImports),
 			Actual:   uint64(state.importCalls) + 1,
 		}
 		return protocol.HostLimit, []byte(limit.Error()), limit
@@ -478,21 +548,21 @@ func (e *Engine) resolveImport(
 		}
 		return protocol.HostHandlerFailure, []byte(wrapped.Error()), wrapped
 	}
-	if uint64(len(content)) > uint64(state.config.MaxImportBytes) {
+	if uint64(len(content)) > uint64(state.limits.MaxImportBytes) {
 		limit := &LimitError{
 			Resource: "import bytes",
-			Limit:    uint64(state.config.MaxImportBytes),
+			Limit:    uint64(state.limits.MaxImportBytes),
 			Actual:   uint64(len(content)),
 		}
 		return protocol.HostLimit, []byte(limit.Error()), limit
 	}
 	state.mu.Lock()
 	nextTotal := state.importBytes + uint64(len(content))
-	if nextTotal < state.importBytes || nextTotal > state.config.MaxTotalImportBytes {
+	if nextTotal < state.importBytes || nextTotal > state.limits.MaxTotalImportBytes {
 		state.mu.Unlock()
 		limit := &LimitError{
 			Resource: "total import bytes",
-			Limit:    state.config.MaxTotalImportBytes,
+			Limit:    state.limits.MaxTotalImportBytes,
 			Actual:   nextTotal,
 		}
 		return protocol.HostLimit, []byte(limit.Error()), limit
@@ -513,10 +583,10 @@ func (e *Engine) resolveImport(
 		}
 		return protocol.HostHandlerFailure, []byte(wrapped.Error()), wrapped
 	}
-	if uint64(len(payload)) > uint64(state.config.MaxHostResponseBytes) {
+	if uint64(len(payload)) > uint64(state.limits.MaxHostResponseBytes) {
 		limit := &LimitError{
 			Resource: "import response bytes",
-			Limit:    uint64(state.config.MaxHostResponseBytes),
+			Limit:    uint64(state.limits.MaxHostResponseBytes),
 			Actual:   uint64(len(payload)),
 		}
 		return protocol.HostLimit, []byte(limit.Error()), limit
@@ -540,11 +610,11 @@ func (e *Engine) callCapability(
 	}
 
 	state.mu.Lock()
-	if state.capabilityCalls >= state.config.MaxCapabilityCalls {
+	if state.capabilityCalls >= state.limits.MaxCapabilityCalls {
 		state.mu.Unlock()
 		limit := &LimitError{
 			Resource: "capability calls",
-			Limit:    uint64(state.config.MaxCapabilityCalls),
+			Limit:    uint64(state.limits.MaxCapabilityCalls),
 			Actual:   uint64(state.capabilityCalls) + 1,
 		}
 		return protocol.HostLimit, []byte(limit.Error()), limit
@@ -576,10 +646,10 @@ func (e *Engine) callCapability(
 		failure := &CapabilityError{Name: request.Name, Err: fmt.Errorf("encode result envelope: %w", err)}
 		return protocol.HostHandlerFailure, []byte(failure.Error()), failure
 	}
-	if uint64(len(payload)) > uint64(state.config.MaxHostResponseBytes) {
+	if uint64(len(payload)) > uint64(state.limits.MaxHostResponseBytes) {
 		limit := &LimitError{
 			Resource: "capability response bytes",
-			Limit:    uint64(state.config.MaxHostResponseBytes),
+			Limit:    uint64(state.limits.MaxHostResponseBytes),
 			Actual:   uint64(len(payload)),
 		}
 		return protocol.HostLimit, []byte(limit.Error()), limit
@@ -619,6 +689,11 @@ var requiredGuestExports = map[string]struct {
 	"securejsonnet_evaluate":      {results: []api.ValueType{api.ValueTypeI32}},
 	"securejsonnet_result_ptr":    {results: []api.ValueType{api.ValueTypeI32}},
 	"securejsonnet_result_len":    {results: []api.ValueType{api.ValueTypeI32}},
+	"securejsonnet_trace_ptr":     {results: []api.ValueType{api.ValueTypeI32}},
+	"securejsonnet_trace_len":     {results: []api.ValueType{api.ValueTypeI32}},
+	"securejsonnet_trace_truncated": {
+		results: []api.ValueType{api.ValueTypeI32},
+	},
 }
 
 func validateCompiledModule(compiled wazero.CompiledModule) error {
@@ -774,6 +849,24 @@ func normalizeConfig(input EngineConfig) (EngineConfig, error) {
 	if err != nil {
 		return EngineConfig{}, err
 	}
+	out.MaxTraceBytes, err = normalizeUnsigned(
+		"MaxTraceBytes",
+		out.MaxTraceBytes,
+		defaultConfig.MaxTraceBytes,
+		hardCeilings.MaxTraceBytes,
+	)
+	if err != nil {
+		return EngineConfig{}, err
+	}
+	out.MaxConcurrentEvaluations, err = normalizeUnsigned(
+		"MaxConcurrentEvaluations",
+		out.MaxConcurrentEvaluations,
+		defaultConfig.MaxConcurrentEvaluations,
+		hardCeilings.MaxConcurrentEvaluations,
+	)
+	if err != nil {
+		return EngineConfig{}, err
+	}
 	if out.MaxMemoryBytes%wasmPageSize != 0 {
 		return EngineConfig{}, &InvalidRequestError{
 			Field: "EngineConfig.MaxMemoryBytes",
@@ -787,6 +880,123 @@ func normalizeConfig(input EngineConfig) (EngineConfig, error) {
 		}
 	}
 	return out, nil
+}
+
+func normalizeRequestLimits(
+	input RequestLimits,
+	ceiling EngineConfig,
+) (RequestLimits, error) {
+	out := input
+	var err error
+	out.MaxSourceBytes, err = inheritRequestLimit(
+		"MaxSourceBytes",
+		out.MaxSourceBytes,
+		ceiling.MaxSourceBytes,
+	)
+	if err != nil {
+		return RequestLimits{}, err
+	}
+	out.MaxOutputBytes, err = inheritRequestLimit(
+		"MaxOutputBytes",
+		out.MaxOutputBytes,
+		ceiling.MaxOutputBytes,
+	)
+	if err != nil {
+		return RequestLimits{}, err
+	}
+	switch {
+	case out.MaxStack == 0:
+		out.MaxStack = ceiling.MaxStack
+	case out.MaxStack < 0:
+		return RequestLimits{}, &InvalidRequestError{
+			Field: "Limits.MaxStack",
+			Err:   errors.New("must not be negative"),
+		}
+	case out.MaxStack > ceiling.MaxStack:
+		return RequestLimits{}, &InvalidRequestError{
+			Field: "Limits.MaxStack",
+			Err:   fmt.Errorf("%d exceeds engine ceiling %d", out.MaxStack, ceiling.MaxStack),
+		}
+	}
+	out.MaxImports, err = inheritRequestLimit(
+		"MaxImports",
+		out.MaxImports,
+		ceiling.MaxImports,
+	)
+	if err != nil {
+		return RequestLimits{}, err
+	}
+	out.MaxImportBytes, err = inheritRequestLimit(
+		"MaxImportBytes",
+		out.MaxImportBytes,
+		ceiling.MaxImportBytes,
+	)
+	if err != nil {
+		return RequestLimits{}, err
+	}
+	out.MaxTotalImportBytes, err = inheritRequestLimit(
+		"MaxTotalImportBytes",
+		out.MaxTotalImportBytes,
+		ceiling.MaxTotalImportBytes,
+	)
+	if err != nil {
+		return RequestLimits{}, err
+	}
+	out.MaxCapabilityCalls, err = inheritRequestLimit(
+		"MaxCapabilityCalls",
+		out.MaxCapabilityCalls,
+		ceiling.MaxCapabilityCalls,
+	)
+	if err != nil {
+		return RequestLimits{}, err
+	}
+	out.MaxHostRequestBytes, err = inheritRequestLimit(
+		"MaxHostRequestBytes",
+		out.MaxHostRequestBytes,
+		ceiling.MaxHostRequestBytes,
+	)
+	if err != nil {
+		return RequestLimits{}, err
+	}
+	out.MaxHostResponseBytes, err = inheritRequestLimit(
+		"MaxHostResponseBytes",
+		out.MaxHostResponseBytes,
+		ceiling.MaxHostResponseBytes,
+	)
+	if err != nil {
+		return RequestLimits{}, err
+	}
+	if out.MaxHostResponseBytes < minHostResponseSize {
+		return RequestLimits{}, &InvalidRequestError{
+			Field: "Limits.MaxHostResponseBytes",
+			Err:   fmt.Errorf("must be at least %d bytes", minHostResponseSize),
+		}
+	}
+	out.MaxTraceBytes, err = inheritRequestLimit(
+		"MaxTraceBytes",
+		out.MaxTraceBytes,
+		ceiling.MaxTraceBytes,
+	)
+	if err != nil {
+		return RequestLimits{}, err
+	}
+	return out, nil
+}
+
+func inheritRequestLimit[T ~uint32 | ~uint64](
+	field string,
+	value, ceiling T,
+) (T, error) {
+	if value == 0 {
+		return ceiling, nil
+	}
+	if value > ceiling {
+		return 0, &InvalidRequestError{
+			Field: "Limits." + field,
+			Err:   fmt.Errorf("%d exceeds engine ceiling %d", value, ceiling),
+		}
+	}
+	return value, nil
 }
 
 func normalizeUnsigned[T ~uint32 | ~uint64](
@@ -857,16 +1067,21 @@ func prepareRequestMode(
 			Err:   errors.New("must be empty for file evaluation"),
 		}
 	}
+	limits, err := normalizeRequestLimits(request.Limits, config)
+	if err != nil {
+		return nil, Request{}, err
+	}
+	request.Limits = limits
 	if !utf8.ValidString(request.Source) {
 		return nil, Request{}, &InvalidRequestError{
 			Field: "Source",
 			Err:   errors.New("must be valid UTF-8"),
 		}
 	}
-	if uint64(len(request.Source)) > uint64(config.MaxSourceBytes) {
+	if uint64(len(request.Source)) > uint64(limits.MaxSourceBytes) {
 		return nil, Request{}, &LimitError{
 			Resource: "source bytes",
-			Limit:    uint64(config.MaxSourceBytes),
+			Limit:    uint64(limits.MaxSourceBytes),
 			Actual:   uint64(len(request.Source)),
 		}
 	}
@@ -929,21 +1144,23 @@ func prepareRequestMode(
 		Capabilities:  descriptors,
 		StringOutput:  request.StringOutput,
 		OutputNewline: !request.OmitTrailingNewline,
+		CaptureTrace:  request.CaptureTrace,
 		Limits: protocol.Limits{
-			MaxOutputBytes:       config.MaxOutputBytes,
-			MaxStack:             config.MaxStack,
-			MaxHostRequestBytes:  config.MaxHostRequestBytes,
-			MaxHostResponseBytes: config.MaxHostResponseBytes,
+			MaxOutputBytes:       limits.MaxOutputBytes,
+			MaxStack:             limits.MaxStack,
+			MaxHostRequestBytes:  limits.MaxHostRequestBytes,
+			MaxHostResponseBytes: limits.MaxHostResponseBytes,
+			MaxTraceBytes:        limits.MaxTraceBytes,
 		},
 	}
 	encoded, err := json.Marshal(wire)
 	if err != nil {
 		return nil, Request{}, &InvalidRequestError{Err: fmt.Errorf("encode request: %w", err)}
 	}
-	if uint64(len(encoded)) > uint64(config.MaxHostRequestBytes) {
+	if uint64(len(encoded)) > uint64(limits.MaxHostRequestBytes) {
 		return nil, Request{}, &LimitError{
 			Resource: "encoded request",
-			Limit:    uint64(config.MaxHostRequestBytes),
+			Limit:    uint64(limits.MaxHostRequestBytes),
 			Actual:   uint64(len(encoded)),
 		}
 	}
@@ -1066,6 +1283,37 @@ func readGuestResult(mod api.Module, ptr, length, limit uint32) ([]byte, error) 
 	return append([]byte(nil), memory...), nil
 }
 
+func readGuestTrace(
+	ctx context.Context,
+	mod api.Module,
+	limit uint32,
+) ([]byte, bool, error) {
+	ptr, err := callU32(ctx, mod, "securejsonnet_trace_ptr")
+	if err != nil {
+		return nil, false, &ABIError{Err: err}
+	}
+	length, err := callU32(ctx, mod, "securejsonnet_trace_len")
+	if err != nil {
+		return nil, false, &ABIError{Err: err}
+	}
+	truncated, err := callU32(ctx, mod, "securejsonnet_trace_truncated")
+	if err != nil {
+		return nil, false, &ABIError{Err: err}
+	}
+	if truncated > 1 {
+		return nil, false, &ABIError{Err: errors.New("guest returned invalid trace truncation flag")}
+	}
+	trace, err := readGuestResult(mod, ptr, length, limit)
+	if err != nil {
+		var limitErr *LimitError
+		if errors.As(err, &limitErr) {
+			limitErr.Resource = "trace"
+		}
+		return nil, false, err
+	}
+	return trace, truncated == 1, nil
+}
+
 func writeHostResponse(response []byte, status uint32, payload []byte) uint64 {
 	if status == protocol.HostOK && len(payload) > len(response) {
 		return protocol.Pack(protocol.HostLimit, 0)
@@ -1109,6 +1357,25 @@ func (s *invocationState) error() error {
 	return s.lastErr
 }
 
+func (s *invocationState) stats(
+	queueDuration time.Duration,
+	executionDuration time.Duration,
+	traceBytes int,
+	traceTruncated bool,
+) EvaluationStats {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return EvaluationStats{
+		QueueDuration:     queueDuration,
+		ExecutionDuration: executionDuration,
+		ImportResolutions: s.importCalls,
+		ImportBytes:       s.importBytes,
+		CapabilityCalls:   s.capabilityCalls,
+		TraceBytes:        uint32(traceBytes), //nolint:gosec // bounded by a uint32 request limit.
+		TraceTruncated:    traceTruncated,
+	}
+}
+
 func (e *Engine) runtimeError(ctx context.Context, operation string, err error) error {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return &CancellationError{Err: ctxErr}
@@ -1135,7 +1402,7 @@ func (e *Engine) runtimeError(ctx context.Context, operation string, err error) 
 	return &GuestTrapError{Operation: operation, Err: err}
 }
 
-func guestStatusError(status uint32, payload []byte, config EngineConfig) error {
+func guestStatusError(status uint32, payload []byte, limits RequestLimits) error {
 	var guest protocol.GuestError
 	if err := protocol.DecodeJSON(payload, &guest); err != nil {
 		return &ABIError{Err: fmt.Errorf("decode guest error for status %d: %w", status, err)}
@@ -1152,7 +1419,7 @@ func guestStatusError(status uint32, payload []byte, config EngineConfig) error 
 		limit := guest.Limit
 		actual := guest.Actual
 		if limit == 0 {
-			limit = uint64(config.MaxOutputBytes)
+			limit = uint64(limits.MaxOutputBytes)
 		}
 		if actual == 0 {
 			actual = limit + 1
