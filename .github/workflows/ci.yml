@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: 1.24.5
+          cache-dependency-path: go.sum
+      - run: make fmt-check
+      - run: go vet ./...
+      - run: make test
+      - run: make race
+      - run: make no-cgo
+      - run: make wasm-check
+      - run: go test -run='^$' -fuzz=FuzzDecodeHostPayloads -fuzztime=5s .
+      - run: go test -run='^$' -fuzz=FuzzDecodeImportResponse -fuzztime=5s ./internal/protocol
