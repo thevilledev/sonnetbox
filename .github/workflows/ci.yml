@@ -165,4 +165,4 @@ jobs:
           annotations: true
           collect: all
           persona: pedantic
-          version: v1.28.0
+          version: v1.27.0
