@@ -1,4 +1,4 @@
-package wasmnet
+package sonnetbox
 
 import (
 	"context"
@@ -17,8 +17,8 @@ import (
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
-	"github.com/thevilledev/wasmnet/internal/guestblob"
-	"github.com/thevilledev/wasmnet/internal/protocol"
+	"github.com/thevilledev/sonnetbox/internal/guestblob"
+	"github.com/thevilledev/sonnetbox/internal/protocol"
 )
 
 const (
@@ -152,7 +152,7 @@ func newEngine(
 	if err != nil {
 		return nil, &ABIError{Err: fmt.Errorf("instantiate ABI probe: %w", err)}
 	}
-	version, err := callU32(ctx, probe, "wasmnet_abi_version")
+	version, err := callU32(ctx, probe, "sonnetbox_abi_version")
 	_ = probe.Close(cleanupCtx)
 	if err != nil {
 		return nil, &ABIError{Err: err}
@@ -272,9 +272,9 @@ func (e *Engine) evaluate(
 		_ = mod.Close(cleanupCtx)
 	}(cleanupCtx)
 
-	alloc := mod.ExportedFunction("wasmnet_request_alloc")
+	alloc := mod.ExportedFunction("sonnetbox_request_alloc")
 	if alloc == nil {
-		return Result{}, &ABIError{Err: errors.New("missing wasmnet_request_alloc export")}
+		return Result{}, &ABIError{Err: errors.New("missing sonnetbox_request_alloc export")}
 	}
 	requestLength := uint32(len(wireRequest)) //nolint:gosec // prepareRequest bounds this length to uint32.
 	values, err := alloc.Call(callCtx, uint64(requestLength))
@@ -289,9 +289,9 @@ func (e *Engine) evaluate(
 		return Result{}, &ABIError{Err: errors.New("request pointer is outside guest memory")}
 	}
 
-	evaluate := mod.ExportedFunction("wasmnet_evaluate")
+	evaluate := mod.ExportedFunction("sonnetbox_evaluate")
 	if evaluate == nil {
-		return Result{}, &ABIError{Err: errors.New("missing wasmnet_evaluate export")}
+		return Result{}, &ABIError{Err: errors.New("missing sonnetbox_evaluate export")}
 	}
 	values, err = evaluate.Call(callCtx)
 	if err != nil {
@@ -308,11 +308,11 @@ func (e *Engine) evaluate(
 		return Result{}, hostErr
 	}
 
-	ptr, err := callU32(callCtx, mod, "wasmnet_result_ptr")
+	ptr, err := callU32(callCtx, mod, "sonnetbox_result_ptr")
 	if err != nil {
 		return Result{}, &ABIError{Err: err}
 	}
-	length, err := callU32(callCtx, mod, "wasmnet_result_len")
+	length, err := callU32(callCtx, mod, "sonnetbox_result_len")
 	if err != nil {
 		return Result{}, &ABIError{Err: err}
 	}
@@ -389,12 +389,12 @@ func (e *Engine) instantiate(ctx context.Context) (api.Module, error) {
 func (e *Engine) moduleConfig() wazero.ModuleConfig {
 	id := e.instance.Add(1)
 	return wazero.NewModuleConfig().
-		WithName(fmt.Sprintf("wasmnet-%d", id)).
+		WithName(fmt.Sprintf("sonnetbox-%d", id)).
 		WithStartFunctions("_initialize")
 }
 
 func (e *Engine) instantiateHostModule(ctx context.Context) error {
-	_, err := e.runtime.NewHostModuleBuilder("wasmnet_host").
+	_, err := e.runtime.NewHostModuleBuilder("sonnetbox_host").
 		NewFunctionBuilder().
 		WithFunc(e.hostCall).
 		Export("call").
@@ -692,15 +692,15 @@ var requiredGuestExports = map[string]struct {
 	params  []api.ValueType
 	results []api.ValueType
 }{
-	"_initialize":           {},
-	"wasmnet_abi_version":   {results: []api.ValueType{api.ValueTypeI32}},
-	"wasmnet_request_alloc": {params: []api.ValueType{api.ValueTypeI32}, results: []api.ValueType{api.ValueTypeI32}},
-	"wasmnet_evaluate":      {results: []api.ValueType{api.ValueTypeI32}},
-	"wasmnet_result_ptr":    {results: []api.ValueType{api.ValueTypeI32}},
-	"wasmnet_result_len":    {results: []api.ValueType{api.ValueTypeI32}},
-	"wasmnet_trace_ptr":     {results: []api.ValueType{api.ValueTypeI32}},
-	"wasmnet_trace_len":     {results: []api.ValueType{api.ValueTypeI32}},
-	"wasmnet_trace_truncated": {
+	"_initialize":             {},
+	"sonnetbox_abi_version":   {results: []api.ValueType{api.ValueTypeI32}},
+	"sonnetbox_request_alloc": {params: []api.ValueType{api.ValueTypeI32}, results: []api.ValueType{api.ValueTypeI32}},
+	"sonnetbox_evaluate":      {results: []api.ValueType{api.ValueTypeI32}},
+	"sonnetbox_result_ptr":    {results: []api.ValueType{api.ValueTypeI32}},
+	"sonnetbox_result_len":    {results: []api.ValueType{api.ValueTypeI32}},
+	"sonnetbox_trace_ptr":     {results: []api.ValueType{api.ValueTypeI32}},
+	"sonnetbox_trace_len":     {results: []api.ValueType{api.ValueTypeI32}},
+	"sonnetbox_trace_truncated": {
 		results: []api.ValueType{api.ValueTypeI32},
 	},
 }
@@ -720,7 +720,7 @@ func validateCompiledModule(compiled wazero.CompiledModule) error {
 			if _, ok := allowedWASIImports[functionName]; !ok {
 				return fmt.Errorf("guest imports unexpected WASI function %q", functionName)
 			}
-		case "wasmnet_host":
+		case "sonnetbox_host":
 			hostCalls++
 			if functionName != "call" {
 				return fmt.Errorf("guest imports unexpected host function %q", functionName)
@@ -735,7 +735,7 @@ func validateCompiledModule(compiled wazero.CompiledModule) error {
 			wantResults := []api.ValueType{api.ValueTypeI64}
 			if !slices.Equal(definition.ParamTypes(), wantParams) ||
 				!slices.Equal(definition.ResultTypes(), wantResults) {
-				return errors.New("wasmnet_host.call has an unexpected signature")
+				return errors.New("sonnetbox_host.call has an unexpected signature")
 			}
 		default:
 			return fmt.Errorf(
@@ -746,7 +746,7 @@ func validateCompiledModule(compiled wazero.CompiledModule) error {
 		}
 	}
 	if hostCalls != 1 {
-		return fmt.Errorf("guest imports wasmnet_host.call %d times, want 1", hostCalls)
+		return fmt.Errorf("guest imports sonnetbox_host.call %d times, want 1", hostCalls)
 	}
 
 	exports := compiled.ExportedFunctions()
@@ -1297,15 +1297,15 @@ func readGuestTrace(
 	mod api.Module,
 	limit uint32,
 ) ([]byte, bool, error) {
-	ptr, err := callU32(ctx, mod, "wasmnet_trace_ptr")
+	ptr, err := callU32(ctx, mod, "sonnetbox_trace_ptr")
 	if err != nil {
 		return nil, false, &ABIError{Err: err}
 	}
-	length, err := callU32(ctx, mod, "wasmnet_trace_len")
+	length, err := callU32(ctx, mod, "sonnetbox_trace_len")
 	if err != nil {
 		return nil, false, &ABIError{Err: err}
 	}
-	truncated, err := callU32(ctx, mod, "wasmnet_trace_truncated")
+	truncated, err := callU32(ctx, mod, "sonnetbox_trace_truncated")
 	if err != nil {
 		return nil, false, &ABIError{Err: err}
 	}

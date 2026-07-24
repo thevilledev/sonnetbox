@@ -9,11 +9,11 @@ import (
 
 	nativejsonnet "github.com/google/go-jsonnet"
 	"github.com/google/go-jsonnet/ast"
-	"github.com/thevilledev/wasmnet"
+	"github.com/thevilledev/sonnetbox"
 )
 
 func TestDifferentialCommonVMOperations(t *testing.T) {
-	engine, err := wasmnet.NewEngine(
+	engine, err := sonnetbox.NewEngine(
 		context.Background(),
 		RecommendedEngineConfig(),
 	)
@@ -413,7 +413,7 @@ func (writer errorWriter) Write([]byte) (int, error) {
 	return 0, writer.err
 }
 
-func newTestVM(t *testing.T, engine *wasmnet.Engine) *VM {
+func newTestVM(t *testing.T, engine *sonnetbox.Engine) *VM {
 	t.Helper()
 	vm, err := New(engine)
 	if err != nil {

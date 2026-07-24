@@ -1,4 +1,4 @@
-package wasmnet
+package sonnetbox
 
 import (
 	"errors"
@@ -78,7 +78,7 @@ func TestErrorTypesFormatAndUnwrap(t *testing.T) {
 		{
 			name: "closed engine with cause",
 			err:  &EngineClosedError{Err: cause},
-			want: "wasmnet engine is closed: cause",
+			want: "sonnetbox engine is closed: cause",
 		},
 	}
 
@@ -104,7 +104,7 @@ func TestErrorTypesWithoutCauses(t *testing.T) {
 	}
 
 	closed := &EngineClosedError{}
-	if got, want := closed.Error(), "wasmnet engine is closed"; got != want {
+	if got, want := closed.Error(), "sonnetbox engine is closed"; got != want {
 		t.Fatalf("EngineClosedError.Error() = %q, want %q", got, want)
 	}
 	if errors.Unwrap(closed) != nil {

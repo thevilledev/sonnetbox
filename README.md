@@ -1,8 +1,8 @@
-# wasmnet
+# sonnetbox
 
-[![CI](https://github.com/thevilledev/wasmnet/actions/workflows/ci.yml/badge.svg)](https://github.com/thevilledev/wasmnet/actions/workflows/ci.yml)
+[![CI](https://github.com/thevilledev/sonnetbox/actions/workflows/ci.yml/badge.svg)](https://github.com/thevilledev/sonnetbox/actions/workflows/ci.yml)
 
-`wasmnet` evaluates untrusted Jsonnet in a fresh WebAssembly sandbox. It
+`sonnetbox` evaluates untrusted Jsonnet in a fresh WebAssembly sandbox. It
 embeds [go-jsonnet](https://github.com/google/go-jsonnet) in a Go WASI guest
 and runs that guest with [wazero](https://wazero.io/). Jsonnet receives no
 ambient filesystem, environment, network, arguments, or inherited standard
@@ -21,22 +21,22 @@ libraries, or go-jsonnet's browser-only `js/wasm` artifact.
 
 ## Quick start
 
-The module path is `github.com/thevilledev/wasmnet`; its root package name is
-`wasmnet`:
+The module path is `github.com/thevilledev/sonnetbox`; its root package name is
+`sonnetbox`:
 
 ```go
-import "github.com/thevilledev/wasmnet"
+import "github.com/thevilledev/sonnetbox"
 
-engine, err := wasmnet.NewEngine(
+engine, err := sonnetbox.NewEngine(
 	context.Background(),
-	wasmnet.EngineConfig{},
+	sonnetbox.EngineConfig{},
 )
 if err != nil {
 	log.Fatal(err)
 }
 defer engine.Close(context.Background())
 
-imports, err := wasmnet.NewMapImporter(map[string][]byte{
+imports, err := sonnetbox.NewMapImporter(map[string][]byte{
 	"lib/data.jsonnet": []byte(`{answer: 42}`),
 })
 if err != nil {
@@ -46,7 +46,7 @@ if err != nil {
 ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 defer cancel()
 
-result, err := engine.Evaluate(ctx, wasmnet.Request{
+result, err := engine.Evaluate(ctx, sonnetbox.Request{
 	Filename: "apps/main.jsonnet",
 	Source:   `import "../lib/data.jsonnet"`,
 	Importer: imports,
@@ -96,9 +96,9 @@ go-jsonnet's `FileImporter`.
 relative paths and symlinks from escaping it:
 
 ```go
-workspace, err := wasmnet.NewWorkspaceImporter(
+workspace, err := sonnetbox.NewWorkspaceImporter(
 	"./jsonnet",
-	wasmnet.WithLibraryPaths("vendor", "lib"),
+	sonnetbox.WithLibraryPaths("vendor", "lib"),
 )
 if err != nil {
 	log.Fatal(err)
@@ -122,7 +122,7 @@ and host-message byte limits to every importer.
 Capabilities are request-scoped Jsonnet native functions:
 
 ```go
-Capabilities: map[string]wasmnet.Capability{
+Capabilities: map[string]sonnetbox.Capability{
 	"lookup": {
 		Params: []string{"key"},
 		Call: func(ctx context.Context, args []any) (any, error) {
@@ -178,7 +178,7 @@ host/guest ABI version, which is useful in logs and compatibility reports.
 
 The embedded evaluator is go-jsonnet v0.22.0. For successful evaluations on
 the documented compatibility surface and within configured budgets,
-wasmnet intends to return the same rendered bytes as that version.
+sonnetbox intends to return the same rendered bytes as that version.
 Differential tests cover variables, arguments, native functions, imports,
 traces, single output, multi-file output, and streams.
 
@@ -217,7 +217,7 @@ idempotent, rejects new work, and aborts active guest calls.
 
 ## ABI
 
-The embedded guest uses private ABI version 6. The host sends one bounded
+The embedded guest uses private ABI version 7. The host sends one bounded
 evaluation request to guest-owned memory. Guest-to-host calls use one imported
 function for import resolution and capability invocation. Status values
 distinguish success, denial, handler failure, limits, cancellation, and

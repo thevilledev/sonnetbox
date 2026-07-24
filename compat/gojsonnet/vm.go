@@ -12,19 +12,19 @@ import (
 	"sync"
 
 	nativejsonnet "github.com/google/go-jsonnet"
-	"github.com/thevilledev/wasmnet"
+	"github.com/thevilledev/sonnetbox"
 )
 
 // VM stores mutable evaluation settings. Like go-jsonnet's VM, it must not be
 // mutated or evaluated concurrently.
 type VM struct {
-	engine       *wasmnet.Engine
-	importer     wasmnet.Importer
+	engine       *sonnetbox.Engine
+	importer     sonnetbox.Importer
 	extVars      map[string]string
 	extCode      map[string]string
 	tlaVars      map[string]string
 	tlaCode      map[string]string
-	capabilities map[string]wasmnet.Capability
+	capabilities map[string]sonnetbox.Capability
 	traceOut     io.Writer
 
 	// MaxStack lowers the engine stack ceiling when nonzero.
@@ -34,13 +34,13 @@ type VM struct {
 	// OutputNewline controls the trailing output newline.
 	OutputNewline bool
 	// Limits lowers other engine ceilings for each evaluation.
-	Limits wasmnet.RequestLimits
+	Limits sonnetbox.RequestLimits
 }
 
 // New creates a compatibility VM backed by one long-lived secure engine.
-func New(engine *wasmnet.Engine) (*VM, error) {
+func New(engine *sonnetbox.Engine) (*VM, error) {
 	if engine == nil {
-		return nil, errors.New("wasmnet compatibility VM requires an engine")
+		return nil, errors.New("sonnetbox compatibility VM requires an engine")
 	}
 	return &VM{
 		engine:        engine,
@@ -48,20 +48,20 @@ func New(engine *wasmnet.Engine) (*VM, error) {
 		extCode:       make(map[string]string),
 		tlaVars:       make(map[string]string),
 		tlaCode:       make(map[string]string),
-		capabilities:  make(map[string]wasmnet.Capability),
+		capabilities:  make(map[string]sonnetbox.Capability),
 		traceOut:      os.Stderr,
 		OutputNewline: true,
 	}, nil
 }
 
 // RecommendedEngineConfig preserves go-jsonnet's default stack depth while
-// leaving all other fields at wasmnet defaults.
-func RecommendedEngineConfig() wasmnet.EngineConfig {
-	return wasmnet.EngineConfig{MaxStack: 500}
+// leaving all other fields at sonnetbox defaults.
+func RecommendedEngineConfig() sonnetbox.EngineConfig {
+	return sonnetbox.EngineConfig{MaxStack: 500}
 }
 
 // Importer sets the request-scoped secure importer.
-func (vm *VM) Importer(importer wasmnet.Importer) {
+func (vm *VM) Importer(importer sonnetbox.Importer) {
 	vm.importer = importer
 }
 
@@ -106,7 +106,7 @@ func (vm *VM) NativeFunction(function *nativejsonnet.NativeFunction) {
 	for index, param := range function.Params {
 		params[index] = string(param)
 	}
-	vm.capabilities[function.Name] = wasmnet.Capability{
+	vm.capabilities[function.Name] = sonnetbox.Capability{
 		Params: params,
 		Call: func(_ context.Context, args []any) (any, error) {
 			return function.Func(args)
@@ -126,7 +126,7 @@ func (vm *VM) EvaluateAnonymousSnippet(
 	filename string,
 	source string,
 ) (string, error) {
-	result, err := vm.evaluate(ctx, filename, source, wasmnet.OutputModeSingle, true)
+	result, err := vm.evaluate(ctx, filename, source, sonnetbox.OutputModeSingle, true)
 	if err != nil {
 		return "", err
 	}
@@ -139,7 +139,7 @@ func (vm *VM) EvaluateSnippet(
 	filename string,
 	source string,
 ) (string, error) {
-	result, err := vm.evaluate(ctx, filename, source, wasmnet.OutputModeSingle, false)
+	result, err := vm.evaluate(ctx, filename, source, sonnetbox.OutputModeSingle, false)
 	if err != nil {
 		return "", err
 	}
@@ -148,7 +148,7 @@ func (vm *VM) EvaluateSnippet(
 
 // EvaluateFile loads and evaluates filename through the configured importer.
 func (vm *VM) EvaluateFile(ctx context.Context, filename string) (string, error) {
-	result, err := vm.evaluateFile(ctx, filename, wasmnet.OutputModeSingle)
+	result, err := vm.evaluateFile(ctx, filename, sonnetbox.OutputModeSingle)
 	if err != nil {
 		return "", err
 	}
@@ -161,7 +161,7 @@ func (vm *VM) EvaluateAnonymousSnippetMulti(
 	filename string,
 	source string,
 ) (map[string]string, error) {
-	result, err := vm.evaluate(ctx, filename, source, wasmnet.OutputModeMulti, true)
+	result, err := vm.evaluate(ctx, filename, source, sonnetbox.OutputModeMulti, true)
 	if err != nil {
 		return nil, err
 	}
@@ -174,7 +174,7 @@ func (vm *VM) EvaluateSnippetMulti(
 	filename string,
 	source string,
 ) (map[string]string, error) {
-	result, err := vm.evaluate(ctx, filename, source, wasmnet.OutputModeMulti, false)
+	result, err := vm.evaluate(ctx, filename, source, sonnetbox.OutputModeMulti, false)
 	if err != nil {
 		return nil, err
 	}
@@ -186,7 +186,7 @@ func (vm *VM) EvaluateFileMulti(
 	ctx context.Context,
 	filename string,
 ) (map[string]string, error) {
-	result, err := vm.evaluateFile(ctx, filename, wasmnet.OutputModeMulti)
+	result, err := vm.evaluateFile(ctx, filename, sonnetbox.OutputModeMulti)
 	if err != nil {
 		return nil, err
 	}
@@ -199,7 +199,7 @@ func (vm *VM) EvaluateAnonymousSnippetStream(
 	filename string,
 	source string,
 ) ([]string, error) {
-	result, err := vm.evaluate(ctx, filename, source, wasmnet.OutputModeStream, true)
+	result, err := vm.evaluate(ctx, filename, source, sonnetbox.OutputModeStream, true)
 	if err != nil {
 		return nil, err
 	}
@@ -212,7 +212,7 @@ func (vm *VM) EvaluateSnippetStream(
 	filename string,
 	source string,
 ) ([]string, error) {
-	result, err := vm.evaluate(ctx, filename, source, wasmnet.OutputModeStream, false)
+	result, err := vm.evaluate(ctx, filename, source, sonnetbox.OutputModeStream, false)
 	if err != nil {
 		return nil, err
 	}
@@ -224,7 +224,7 @@ func (vm *VM) EvaluateFileStream(
 	ctx context.Context,
 	filename string,
 ) ([]string, error) {
-	result, err := vm.evaluateFile(ctx, filename, wasmnet.OutputModeStream)
+	result, err := vm.evaluateFile(ctx, filename, sonnetbox.OutputModeStream)
 	if err != nil {
 		return nil, err
 	}
@@ -235,11 +235,11 @@ func (vm *VM) evaluate(
 	ctx context.Context,
 	filename string,
 	source string,
-	mode wasmnet.OutputMode,
+	mode sonnetbox.OutputMode,
 	anonymous bool,
-) (wasmnet.Result, error) {
+) (sonnetbox.Result, error) {
 	request := vm.request(filename, source, mode)
-	var result wasmnet.Result
+	var result sonnetbox.Result
 	var err error
 	if anonymous {
 		result, err = vm.engine.EvaluateAnonymous(ctx, request)
@@ -247,7 +247,7 @@ func (vm *VM) evaluate(
 		result, err = vm.engine.Evaluate(ctx, request)
 	}
 	if err != nil {
-		return wasmnet.Result{}, err
+		return sonnetbox.Result{}, err
 	}
 	return vm.writeTrace(result)
 }
@@ -255,12 +255,12 @@ func (vm *VM) evaluate(
 func (vm *VM) evaluateFile(
 	ctx context.Context,
 	filename string,
-	mode wasmnet.OutputMode,
-) (wasmnet.Result, error) {
+	mode sonnetbox.OutputMode,
+) (sonnetbox.Result, error) {
 	request := vm.request(filename, "", mode)
 	result, err := vm.engine.EvaluateFile(ctx, filename, request)
 	if err != nil {
-		return wasmnet.Result{}, err
+		return sonnetbox.Result{}, err
 	}
 	return vm.writeTrace(result)
 }
@@ -268,13 +268,13 @@ func (vm *VM) evaluateFile(
 func (vm *VM) request(
 	filename string,
 	source string,
-	mode wasmnet.OutputMode,
-) wasmnet.Request {
+	mode sonnetbox.OutputMode,
+) sonnetbox.Request {
 	limits := vm.Limits
 	if vm.MaxStack != 0 {
 		limits.MaxStack = vm.MaxStack
 	}
-	return wasmnet.Request{
+	return sonnetbox.Request{
 		Filename:            filename,
 		Source:              source,
 		ExtVars:             cloneMap(vm.extVars),
@@ -292,13 +292,13 @@ func (vm *VM) request(
 }
 
 func (vm *VM) writeTrace(
-	result wasmnet.Result,
-) (wasmnet.Result, error) {
+	result sonnetbox.Result,
+) (sonnetbox.Result, error) {
 	if vm.traceOut == nil || len(result.Trace) == 0 {
 		return result, nil
 	}
 	if _, err := vm.traceOut.Write(result.Trace); err != nil {
-		return wasmnet.Result{}, fmt.Errorf("write Jsonnet trace: %w", err)
+		return sonnetbox.Result{}, fmt.Errorf("write Jsonnet trace: %w", err)
 	}
 	return result, nil
 }
@@ -310,9 +310,9 @@ func cloneMap(input map[string]string) map[string]string {
 }
 
 func cloneCapabilities(
-	input map[string]wasmnet.Capability,
-) map[string]wasmnet.Capability {
-	output := make(map[string]wasmnet.Capability, len(input))
+	input map[string]sonnetbox.Capability,
+) map[string]sonnetbox.Capability {
+	output := make(map[string]sonnetbox.Capability, len(input))
 	for name, capability := range input {
 		capability.Params = append([]string(nil), capability.Params...)
 		output[name] = capability
@@ -344,7 +344,7 @@ type ImporterAdapter struct {
 }
 
 // AdaptImporter wraps a trusted go-jsonnet importer for migration. Use
-// wasmnet.NewWorkspaceImporter instead of adapting FileImporter.
+// sonnetbox.NewWorkspaceImporter instead of adapting FileImporter.
 func AdaptImporter(importer nativejsonnet.Importer) (*ImporterAdapter, error) {
 	if importer == nil {
 		return nil, errors.New("go-jsonnet importer is nil")
@@ -357,7 +357,7 @@ func AdaptImporter(importer nativejsonnet.Importer) (*ImporterAdapter, error) {
 	return &ImporterAdapter{importer: importer}, nil
 }
 
-// Import implements wasmnet.Importer.
+// Import implements sonnetbox.Importer.
 func (adapter *ImporterAdapter) Import(
 	ctx context.Context,
 	importedFrom string,

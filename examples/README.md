@@ -1,4 +1,4 @@
-# wasmnet examples
+# sonnetbox examples
 
 These runnable programs progress from one isolated evaluation to a small HTTP
 service. Run every command from the repository root.
@@ -14,7 +14,7 @@ go run ./examples/hello
 
 ```json
 {
-   "message": "Hello, wasmnet!",
+   "message": "Hello, sonnetbox!",
    "sandboxed": true
 }
 ```
@@ -106,7 +106,7 @@ untrusted-code boundary:
 - a context deadline provides the CPU and wall-clock budget;
 - per-request limits lower the engine ceilings for source, output, imports,
   capability calls, and traces; and
-- typed wasmnet errors become stable HTTP status codes without exposing
+- typed sonnetbox errors become stable HTTP status codes without exposing
   internal failures.
 
 Capabilities must remain pure: Jsonnet laziness means a capability may run

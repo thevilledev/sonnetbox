@@ -1,4 +1,4 @@
-package wasmnet
+package sonnetbox
 
 import (
 	"context"

@@ -1,4 +1,4 @@
-module github.com/thevilledev/wasmnet
+module github.com/thevilledev/sonnetbox
 
 go 1.25.12
 

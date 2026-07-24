@@ -1,4 +1,4 @@
-package wasmnet
+package sonnetbox
 
 import "fmt"
 
@@ -102,8 +102,8 @@ type EngineClosedError struct{ Err error }
 
 func (e *EngineClosedError) Error() string {
 	if e.Err == nil {
-		return "wasmnet engine is closed"
+		return "sonnetbox engine is closed"
 	}
-	return fmt.Sprintf("wasmnet engine is closed: %v", e.Err)
+	return fmt.Sprintf("sonnetbox engine is closed: %v", e.Err)
 }
 func (e *EngineClosedError) Unwrap() error { return e.Err }

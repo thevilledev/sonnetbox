@@ -1,6 +1,6 @@
 //go:build !race
 
-package wasmnet
+package sonnetbox
 
 import "context"
 

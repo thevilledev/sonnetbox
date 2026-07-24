@@ -11,7 +11,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/thevilledev/wasmnet"
+	"github.com/thevilledev/sonnetbox"
 )
 
 func main() {
@@ -51,9 +51,9 @@ func run(
 		)
 	}
 
-	workspace, err := wasmnet.NewWorkspaceImporter(
+	workspace, err := sonnetbox.NewWorkspaceImporter(
 		*workspacePath,
-		wasmnet.WithLibraryPaths("lib"),
+		sonnetbox.WithLibraryPaths("lib"),
 	)
 	if err != nil {
 		return err
@@ -62,7 +62,7 @@ func run(
 		runErr = errors.Join(runErr, workspace.Close())
 	}()
 
-	engine, err := wasmnet.NewEngine(ctx, wasmnet.EngineConfig{})
+	engine, err := sonnetbox.NewEngine(ctx, sonnetbox.EngineConfig{})
 	if err != nil {
 		return err
 	}
@@ -76,7 +76,7 @@ func run(
 	result, err := engine.EvaluateFile(
 		evaluationCtx,
 		"apps/main.jsonnet",
-		wasmnet.Request{
+		sonnetbox.Request{
 			Importer: workspace,
 			ExtVars:  map[string]string{"environment": *environment},
 		},

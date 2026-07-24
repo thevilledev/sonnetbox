@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/thevilledev/wasmnet"
+	"github.com/thevilledev/sonnetbox"
 )
 
 func TestRender(t *testing.T) {
@@ -168,19 +168,19 @@ func TestClassifyEvaluationError(t *testing.T) {
 	}{
 		{
 			name:       "limit",
-			err:        &wasmnet.LimitError{},
+			err:        &sonnetbox.LimitError{},
 			wantStatus: http.StatusRequestEntityTooLarge,
 			wantCode:   "limit_exceeded",
 		},
 		{
 			name:       "timeout",
-			err:        &wasmnet.CancellationError{Err: context.DeadlineExceeded},
+			err:        &sonnetbox.CancellationError{Err: context.DeadlineExceeded},
 			wantStatus: http.StatusGatewayTimeout,
 			wantCode:   "evaluation_timeout",
 		},
 		{
 			name:       "invalid evaluation request",
-			err:        &wasmnet.InvalidRequestError{Err: errors.New("invalid")},
+			err:        &sonnetbox.InvalidRequestError{Err: errors.New("invalid")},
 			wantStatus: http.StatusUnprocessableEntity,
 			wantCode:   "invalid_evaluation_request",
 		},
@@ -212,7 +212,7 @@ func TestClassifyEvaluationError(t *testing.T) {
 
 func newTestApplication(t *testing.T) *application {
 	t.Helper()
-	engine, err := wasmnet.NewEngine(t.Context(), wasmnet.EngineConfig{})
+	engine, err := sonnetbox.NewEngine(t.Context(), sonnetbox.EngineConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}

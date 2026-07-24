@@ -9,7 +9,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/thevilledev/wasmnet"
+	"github.com/thevilledev/sonnetbox"
 )
 
 const helloSource = `{
@@ -24,7 +24,7 @@ func main() {
 }
 
 func run(ctx context.Context, output io.Writer) (runErr error) {
-	engine, err := wasmnet.NewEngine(ctx, wasmnet.EngineConfig{})
+	engine, err := sonnetbox.NewEngine(ctx, sonnetbox.EngineConfig{})
 	if err != nil {
 		return err
 	}
@@ -35,10 +35,10 @@ func run(ctx context.Context, output io.Writer) (runErr error) {
 	evaluationCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
-	result, err := engine.Evaluate(evaluationCtx, wasmnet.Request{
+	result, err := engine.Evaluate(evaluationCtx, sonnetbox.Request{
 		Filename: "hello.jsonnet",
 		Source:   helloSource,
-		ExtVars:  map[string]string{"name": "wasmnet"},
+		ExtVars:  map[string]string{"name": "sonnetbox"},
 	})
 	if err != nil {
 		return err

@@ -37,8 +37,8 @@ func TestDecodeJSONRejectsUnknownAndTrailingFields(t *testing.T) {
 }
 
 func TestABIConstants(t *testing.T) {
-	if ABIVersion != 6 {
-		t.Fatalf("ABI version = %d, want 6", ABIVersion)
+	if ABIVersion != 7 {
+		t.Fatalf("ABI version = %d, want 7", ABIVersion)
 	}
 	statuses := []uint32{
 		HostOK,

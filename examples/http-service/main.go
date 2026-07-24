@@ -17,7 +17,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/thevilledev/wasmnet"
+	"github.com/thevilledev/sonnetbox"
 )
 
 const (
@@ -27,8 +27,8 @@ const (
 )
 
 type application struct {
-	engine   *wasmnet.Engine
-	importer wasmnet.Importer
+	engine   *sonnetbox.Engine
+	importer sonnetbox.Importer
 	products map[string]map[string]any
 }
 
@@ -72,8 +72,8 @@ func main() {
 	}
 }
 
-func newApplication(engine *wasmnet.Engine) (*application, error) {
-	importer, err := wasmnet.NewMapImporter(map[string][]byte{
+func newApplication(engine *sonnetbox.Engine) (*application, error) {
+	importer, err := sonnetbox.NewMapImporter(map[string][]byte{
 		"lib/catalog.libsonnet": []byte(catalogLibrary),
 	})
 	if err != nil {
@@ -127,7 +127,7 @@ func (app *application) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 
 	ctx, cancel := context.WithTimeout(request.Context(), evaluationTimeout)
 	defer cancel()
-	result, err := app.engine.Evaluate(ctx, wasmnet.Request{
+	result, err := app.engine.Evaluate(ctx, sonnetbox.Request{
 		Filename:     "requests/input.jsonnet",
 		Source:       input.Source,
 		ExtVars:      map[string]string{"customer": input.Customer},
@@ -153,8 +153,8 @@ func (app *application) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 	})
 }
 
-func (app *application) capabilities() map[string]wasmnet.Capability {
-	return map[string]wasmnet.Capability{
+func (app *application) capabilities() map[string]sonnetbox.Capability {
+	return map[string]sonnetbox.Capability{
 		"lookup_product": {
 			Params: []string{"sku"},
 			Call: func(ctx context.Context, args []any) (any, error) {
@@ -175,8 +175,8 @@ func (app *application) capabilities() map[string]wasmnet.Capability {
 	}
 }
 
-func serviceRequestLimits() wasmnet.RequestLimits {
-	return wasmnet.RequestLimits{
+func serviceRequestLimits() sonnetbox.RequestLimits {
+	return sonnetbox.RequestLimits{
 		MaxSourceBytes:      64 << 10,
 		MaxOutputBytes:      8 << 10,
 		MaxImports:          8,
@@ -216,30 +216,30 @@ func decodeRenderRequest(
 }
 
 func classifyEvaluationError(err error) (int, string) {
-	var limitError *wasmnet.LimitError
+	var limitError *sonnetbox.LimitError
 	if errors.As(err, &limitError) {
 		return http.StatusRequestEntityTooLarge, "limit_exceeded"
 	}
-	var cancellationError *wasmnet.CancellationError
+	var cancellationError *sonnetbox.CancellationError
 	if errors.As(err, &cancellationError) {
 		return http.StatusGatewayTimeout, "evaluation_timeout"
 	}
-	var importDeniedError *wasmnet.ImportDeniedError
+	var importDeniedError *sonnetbox.ImportDeniedError
 	if errors.As(err, &importDeniedError) {
 		return http.StatusUnprocessableEntity, "import_denied"
 	}
-	var evaluationError *wasmnet.EvaluationError
+	var evaluationError *sonnetbox.EvaluationError
 	if errors.As(err, &evaluationError) {
 		return http.StatusUnprocessableEntity, "evaluation_failed"
 	}
-	var invalidRequestError *wasmnet.InvalidRequestError
+	var invalidRequestError *sonnetbox.InvalidRequestError
 	if errors.As(err, &invalidRequestError) {
 		return http.StatusUnprocessableEntity, "invalid_evaluation_request"
 	}
 	return http.StatusInternalServerError, "internal_error"
 }
 
-func newResponseStats(stats wasmnet.EvaluationStats) responseStats {
+func newResponseStats(stats sonnetbox.EvaluationStats) responseStats {
 	return responseStats{
 		QueueDuration:     stats.QueueDuration.String(),
 		ExecutionDuration: stats.ExecutionDuration.String(),
@@ -274,7 +274,7 @@ func runServer(
 		return errors.New("-addr must not be empty")
 	}
 
-	engine, err := wasmnet.NewEngine(ctx, wasmnet.EngineConfig{})
+	engine, err := sonnetbox.NewEngine(ctx, sonnetbox.EngineConfig{})
 	if err != nil {
 		return err
 	}

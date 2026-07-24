@@ -8,9 +8,9 @@ FUZZ_TIME ?= 10s
 COVERAGE_MIN ?= 70
 BUILD_DIR := build
 COVERAGE_PROFILE := $(BUILD_DIR)/coverage.out
-WASM := internal/guestblob/wasmnet.wasm
-WASM_CHECKSUM := internal/guestblob/wasmnet.wasm.sha256
-GUEST := ./cmd/wasmnet-guest
+WASM := internal/guestblob/sonnetbox.wasm
+WASM_CHECKSUM := internal/guestblob/sonnetbox.wasm.sha256
+GUEST := ./cmd/sonnetbox-guest
 WASM_FLAGS := -trimpath -buildvcs=false -ldflags=-buildid= -buildmode=c-shared
 
 .PHONY: fmt fmt-check lint mod-check test coverage race fuzz fuzz-smoke \

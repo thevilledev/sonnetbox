@@ -35,8 +35,8 @@ stale artifact and is not a substitute for `make wasm`.
 If rebuilding changes the guest, include both of these generated files in the
 same commit as the source change:
 
-- `internal/guestblob/wasmnet.wasm`
-- `internal/guestblob/wasmnet.wasm.sha256`
+- `internal/guestblob/sonnetbox.wasm`
+- `internal/guestblob/sonnetbox.wasm.sha256`
 
 Never commit a Go code or dependency change until `make wasm` has run and the
 resulting blob and checksum have been inspected.
@@ -50,8 +50,8 @@ For changes to Go code, dependencies, the Makefile, workflows, or the embedded
 WASM, run the local suite:
 
 ```sh
-GOCACHE=/private/tmp/wasmnet-gocache \
-GOLANGCI_LINT_CACHE=/private/tmp/wasmnet-lint-cache \
+GOCACHE=/private/tmp/sonnetbox-gocache \
+GOLANGCI_LINT_CACHE=/private/tmp/sonnetbox-lint-cache \
 make ci
 ```
 
@@ -60,7 +60,7 @@ toolchain and does not cover this job:
 
 ```sh
 minimum_go="$(go list -m -f '{{.GoVersion}}')"
-GOCACHE=/private/tmp/wasmnet-go-min-cache \
+GOCACHE=/private/tmp/sonnetbox-go-min-cache \
 GOTOOLCHAIN="go${minimum_go}" \
 CGO_ENABLED=0 \
 go test -count=1 -timeout=5m ./...

@@ -1,4 +1,4 @@
-package wasmnet
+package sonnetbox
 
 import (
 	"context"
@@ -13,7 +13,7 @@ import (
 
 	jsonnet "github.com/google/go-jsonnet"
 	"github.com/tetratelabs/wazero/experimental/wazerotest"
-	"github.com/thevilledev/wasmnet/internal/protocol"
+	"github.com/thevilledev/sonnetbox/internal/protocol"
 )
 
 func TestEvaluateBasicAndJsonnetError(t *testing.T) {

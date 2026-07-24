@@ -20,7 +20,7 @@ func TestRun(t *testing.T) {
 	if err := json.Unmarshal(output.Bytes(), &got); err != nil {
 		t.Fatalf("decode output: %v", err)
 	}
-	if got.Message != "Hello, wasmnet!" || !got.Sandboxed {
+	if got.Message != "Hello, sonnetbox!" || !got.Sandboxed {
 		t.Fatalf("unexpected output: %+v", got)
 	}
 	if !bytes.HasSuffix(output.Bytes(), []byte("\n")) {

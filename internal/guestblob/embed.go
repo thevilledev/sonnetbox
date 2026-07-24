@@ -5,5 +5,5 @@ import _ "embed"
 
 // Module is the reproducibly generated secure Jsonnet WASI reactor.
 //
-//go:embed wasmnet.wasm
+//go:embed sonnetbox.wasm
 var Module []byte
