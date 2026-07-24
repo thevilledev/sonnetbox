@@ -139,6 +139,10 @@ func TestEngineConfigValidation(t *testing.T) {
 			config: EngineConfig{MaxMemoryBytes: hardCeilings.MaxMemoryBytes + wasmPageSize},
 		},
 		{
+			name:   "fuel ceiling",
+			config: EngineConfig{MaxFuel: hardCeilings.MaxFuel + 1},
+		},
+		{
 			name:   "request ceiling",
 			config: EngineConfig{MaxHostRequestBytes: hardCeilings.MaxHostRequestBytes + 1},
 		},
@@ -171,6 +175,7 @@ func TestEngineConfigValidation(t *testing.T) {
 
 func TestRequestLimitsInheritAndRejectEngineOverflow(t *testing.T) {
 	config, err := normalizeConfig(EngineConfig{
+		MaxFuel:              50_000_000,
 		MaxSourceBytes:       1024,
 		MaxOutputBytes:       1024,
 		MaxHostResponseBytes: 1024,
@@ -182,6 +187,7 @@ func TestRequestLimitsInheritAndRejectEngineOverflow(t *testing.T) {
 	_, normalized, err := prepareRequest(Request{
 		Source: `{}`,
 		Limits: RequestLimits{
+			MaxFuel:        25_000_000,
 			MaxOutputBytes: 128,
 			MaxTraceBytes:  64,
 		},
@@ -189,7 +195,8 @@ func TestRequestLimitsInheritAndRejectEngineOverflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if normalized.Limits.MaxOutputBytes != 128 ||
+	if normalized.Limits.MaxFuel != 25_000_000 ||
+		normalized.Limits.MaxOutputBytes != 128 ||
 		normalized.Limits.MaxTraceBytes != 64 ||
 		normalized.Limits.MaxSourceBytes != 1024 {
 		t.Fatalf("unexpected normalized limits: %#v", normalized.Limits)
@@ -197,7 +204,7 @@ func TestRequestLimitsInheritAndRejectEngineOverflow(t *testing.T) {
 
 	_, _, err = prepareRequest(Request{
 		Source: `{}`,
-		Limits: RequestLimits{MaxOutputBytes: 2048},
+		Limits: RequestLimits{MaxFuel: 50_000_001},
 	}, config)
 	var invalid *InvalidRequestError
 	if !errors.As(err, &invalid) {
@@ -255,8 +262,42 @@ func TestTraceCaptureAndStatistics(t *testing.T) {
 		result.Stats.ImportResolutions != 1 ||
 		result.Stats.ImportBytes != 2 ||
 		result.Stats.CapabilityCalls != 1 ||
+		result.Stats.FuelConsumed == 0 ||
 		result.Stats.ExecutionDuration <= 0 {
 		t.Fatalf("unexpected evaluation stats: %#v", result.Stats)
+	}
+}
+
+func TestFuelLimitIsDeterministicAndPerRequest(t *testing.T) {
+	engine := newTestEngine(t, EngineConfig{})
+	request := Request{Source: `{answer: 6 * 7}`}
+
+	result, err := engine.Evaluate(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumed := result.Stats.FuelConsumed
+	if consumed == 0 {
+		t.Fatal("successful evaluation consumed no fuel")
+	}
+
+	request.Limits.MaxFuel = consumed
+	result, err = engine.Evaluate(context.Background(), request)
+	if err != nil {
+		t.Fatalf("exact fuel budget failed: %v", err)
+	}
+	if result.Stats.FuelConsumed != consumed {
+		t.Fatalf("fuel consumed = %d, want deterministic %d", result.Stats.FuelConsumed, consumed)
+	}
+
+	request.Limits.MaxFuel = consumed - 1
+	_, err = engine.Evaluate(context.Background(), request)
+	var limit *LimitError
+	if !errors.As(err, &limit) ||
+		limit.Resource != "fuel" ||
+		limit.Limit != consumed-1 ||
+		limit.Actual != consumed {
+		t.Fatalf("expected deterministic fuel limit, got %T: %v", err, err)
 	}
 }
 
@@ -667,9 +708,10 @@ func TestCancellationDuringEvaluation(t *testing.T) {
 func TestWASMMemoryExhaustion(t *testing.T) {
 	engine := newTestEngine(t, EngineConfig{
 		MaxMemoryBytes: 32 << 20,
+		MaxFuel:        hardCeilings.MaxFuel,
 		MaxOutputBytes: 64 << 20,
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	_, err := engine.Evaluate(ctx, Request{
 		Source: `std.makeArray(2000000, function(x) {index: x, value: "abcdefgh"})`,

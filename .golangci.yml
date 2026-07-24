@@ -58,6 +58,9 @@ linters:
     - wastedassign
     - whitespace
   settings:
+    gomoddirectives:
+      replace-allow-list:
+        - github.com/tetratelabs/wazero
     nolintlint:
       require-explanation: true
       require-specific: true

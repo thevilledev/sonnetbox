@@ -24,6 +24,9 @@ type EngineConfig struct {
 	// MaxMemoryBytes limits each guest's linear memory. It must be a multiple
 	// of 64 KiB.
 	MaxMemoryBytes uint64
+	// MaxFuel limits deterministic WebAssembly instruction work during one
+	// evaluation.
+	MaxFuel uint64
 	// MaxSourceBytes limits Request.Source in bytes.
 	MaxSourceBytes uint32
 	// MaxOutputBytes limits the rendered result in bytes.
@@ -55,6 +58,7 @@ type EngineConfig struct {
 // RequestLimits lowers resource limits for one evaluation. Zero fields inherit
 // their EngineConfig ceiling.
 type RequestLimits struct {
+	MaxFuel              uint64
 	MaxSourceBytes       uint32
 	MaxOutputBytes       uint32
 	MaxStack             int
@@ -121,10 +125,13 @@ type Request struct {
 	CaptureTrace bool
 }
 
-// EvaluationStats reports host-observed work for a successful evaluation.
+// EvaluationStats reports work for a successful evaluation. FuelConsumed is
+// deterministic for the same guest and input; durations and host-observed
+// counters are diagnostic.
 type EvaluationStats struct {
 	QueueDuration     time.Duration
 	ExecutionDuration time.Duration
+	FuelConsumed      uint64
 	ImportResolutions uint32
 	ImportBytes       uint64
 	CapabilityCalls   uint32

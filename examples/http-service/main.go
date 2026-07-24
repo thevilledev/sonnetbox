@@ -46,6 +46,7 @@ type renderResponse struct {
 type responseStats struct {
 	QueueDuration     string `json:"queue_duration"`
 	ExecutionDuration string `json:"execution_duration"`
+	FuelConsumed      uint64 `json:"fuel_consumed"`
 	ImportResolutions uint32 `json:"import_resolutions"`
 	ImportBytes       uint64 `json:"import_bytes"`
 	CapabilityCalls   uint32 `json:"capability_calls"`
@@ -177,6 +178,7 @@ func (app *application) capabilities() map[string]sonnetbox.Capability {
 
 func serviceRequestLimits() sonnetbox.RequestLimits {
 	return sonnetbox.RequestLimits{
+		MaxFuel:             50_000_000,
 		MaxSourceBytes:      64 << 10,
 		MaxOutputBytes:      8 << 10,
 		MaxImports:          8,
@@ -243,6 +245,7 @@ func newResponseStats(stats sonnetbox.EvaluationStats) responseStats {
 	return responseStats{
 		QueueDuration:     stats.QueueDuration.String(),
 		ExecutionDuration: stats.ExecutionDuration.String(),
+		FuelConsumed:      stats.FuelConsumed,
 		ImportResolutions: stats.ImportResolutions,
 		ImportBytes:       stats.ImportBytes,
 		CapabilityCalls:   stats.CapabilityCalls,

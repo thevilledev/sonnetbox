@@ -220,6 +220,7 @@ Engine ceilings define the largest request the process will accept.
 | Concern | Engine ceiling | Per-request override |
 | --- | --- | --- |
 | Guest memory | `MaxMemoryBytes` | None |
+| WASM instruction work | `MaxFuel` | `MaxFuel` |
 | Source bytes | `MaxSourceBytes` | `MaxSourceBytes` |
 | Rendered bytes | `MaxOutputBytes` | `MaxOutputBytes` |
 | Stack depth | `MaxStack` | `MaxStack` |
@@ -229,7 +230,7 @@ Engine ceilings define the largest request the process will accept.
 | ABI message bytes | `MaxHostRequestBytes`, `MaxHostResponseBytes` | Same fields |
 | Trace bytes | `MaxTraceBytes` | `MaxTraceBytes` |
 | Active guests | `MaxConcurrentEvaluations` | None |
-| CPU / wall time | Caller context | Shorter child context |
+| Wall time / host callbacks | Caller context | Shorter child context |
 
 A zero request field inherits its engine ceiling. A request above its ceiling
 is rejected instead of silently clamped.

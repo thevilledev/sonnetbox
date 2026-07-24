@@ -16,6 +16,7 @@ import (
 
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
+	"github.com/tetratelabs/wazero/experimental/fuel"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 	"github.com/thevilledev/sonnetbox/internal/guestblob"
 	"github.com/thevilledev/sonnetbox/internal/protocol"
@@ -31,6 +32,7 @@ var identifierPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 var defaultConfig = EngineConfig{
 	MaxMemoryBytes:           128 << 20,
+	MaxFuel:                  100_000_000,
 	MaxSourceBytes:           256 << 10,
 	MaxOutputBytes:           1 << 20,
 	MaxStack:                 256,
@@ -46,6 +48,7 @@ var defaultConfig = EngineConfig{
 
 var hardCeilings = EngineConfig{
 	MaxMemoryBytes:           1 << 30,
+	MaxFuel:                  10_000_000_000,
 	MaxSourceBytes:           16 << 20,
 	MaxOutputBytes:           64 << 20,
 	MaxStack:                 4096,
@@ -117,7 +120,8 @@ func newEngine(
 
 	runtimeConfig = runtimeConfig.
 		WithMemoryLimitPages(uint32(pages)).
-		WithCloseOnContextDone(true)
+		WithCloseOnContextDone(true).
+		WithFuelConsumption(true)
 	r := wazero.NewRuntimeWithConfig(ctx, runtimeConfig)
 	cleanupCtx := context.WithoutCancel(ctx)
 	cleanup := true
@@ -148,11 +152,12 @@ func newEngine(
 	}
 	e.compiled = compiled
 
-	probe, err := e.instantiate(ctx)
+	probeCtx, _ := fuel.WithFuel(ctx, math.MaxUint64)
+	probe, err := e.instantiate(probeCtx)
 	if err != nil {
 		return nil, &ABIError{Err: fmt.Errorf("instantiate ABI probe: %w", err)}
 	}
-	version, err := callU32(ctx, probe, "sonnetbox_abi_version")
+	version, err := callU32(probeCtx, probe, "sonnetbox_abi_version")
 	_ = probe.Close(cleanupCtx)
 	if err != nil {
 		return nil, &ABIError{Err: err}
@@ -262,10 +267,11 @@ func (e *Engine) evaluate(
 	executionStarted := time.Now()
 	state := &invocationState{request: normalized, limits: normalized.Limits}
 	callCtx := context.WithValue(ctx, invocationKey{}, state)
+	callCtx, meter := fuel.WithFuel(callCtx, normalized.Limits.MaxFuel)
 
 	mod, err := r.InstantiateModule(callCtx, compiled, e.moduleConfig())
 	if err != nil {
-		return Result{}, e.runtimeError(ctx, "initialize", err)
+		return Result{}, e.runtimeError(ctx, "initialize", normalized.Limits.MaxFuel, err)
 	}
 	cleanupCtx := context.WithoutCancel(callCtx)
 	defer func(cleanupCtx context.Context) {
@@ -279,7 +285,7 @@ func (e *Engine) evaluate(
 	requestLength := uint32(len(wireRequest)) //nolint:gosec // prepareRequest bounds this length to uint32.
 	values, err := alloc.Call(callCtx, uint64(requestLength))
 	if err != nil {
-		return Result{}, e.runtimeError(ctx, "request allocation", err)
+		return Result{}, e.runtimeError(ctx, "request allocation", normalized.Limits.MaxFuel, err)
 	}
 	if len(values) != 1 || values[0] > math.MaxUint32 || values[0] == 0 {
 		return Result{}, &ABIError{Err: errors.New("guest returned invalid request pointer")}
@@ -298,7 +304,7 @@ func (e *Engine) evaluate(
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return Result{}, &CancellationError{Err: ctxErr}
 		}
-		return Result{}, e.runtimeError(ctx, "evaluation", err)
+		return Result{}, e.runtimeError(ctx, "evaluation", normalized.Limits.MaxFuel, err)
 	}
 	if len(values) != 1 || values[0] > math.MaxUint32 {
 		return Result{}, &ABIError{Err: errors.New("guest returned invalid evaluation status")}
@@ -308,13 +314,23 @@ func (e *Engine) evaluate(
 		return Result{}, hostErr
 	}
 
-	ptr, err := callU32(callCtx, mod, "sonnetbox_result_ptr")
+	ptr, err := e.callU32(
+		callCtx,
+		mod,
+		"sonnetbox_result_ptr",
+		normalized.Limits.MaxFuel,
+	)
 	if err != nil {
-		return Result{}, &ABIError{Err: err}
+		return Result{}, err
 	}
-	length, err := callU32(callCtx, mod, "sonnetbox_result_len")
+	length, err := e.callU32(
+		callCtx,
+		mod,
+		"sonnetbox_result_len",
+		normalized.Limits.MaxFuel,
+	)
 	if err != nil {
-		return Result{}, &ABIError{Err: err}
+		return Result{}, err
 	}
 	maxResult := normalized.Limits.MaxHostResponseBytes
 	if status == protocol.EvalOK {
@@ -330,10 +346,11 @@ func (e *Engine) evaluate(
 			return Result{}, err
 		}
 		if normalized.CaptureTrace {
-			trace, truncated, err := readGuestTrace(
+			trace, truncated, err := e.readGuestTrace(
 				callCtx,
 				mod,
 				normalized.Limits.MaxTraceBytes,
+				normalized.Limits.MaxFuel,
 			)
 			if err != nil {
 				return Result{}, err
@@ -344,6 +361,7 @@ func (e *Engine) evaluate(
 		result.Stats = state.stats(
 			queueDuration,
 			time.Since(executionStarted),
+			normalized.Limits.MaxFuel-meter.Remaining(),
 			len(result.Trace),
 			result.Stats.TraceTruncated,
 		)
@@ -782,6 +800,15 @@ func normalizeConfig(input EngineConfig) (EngineConfig, error) {
 	if err != nil {
 		return EngineConfig{}, err
 	}
+	out.MaxFuel, err = normalizeUnsigned(
+		"MaxFuel",
+		out.MaxFuel,
+		defaultConfig.MaxFuel,
+		hardCeilings.MaxFuel,
+	)
+	if err != nil {
+		return EngineConfig{}, err
+	}
 	out.MaxSourceBytes, err = normalizeUnsigned(
 		"MaxSourceBytes",
 		out.MaxSourceBytes,
@@ -897,6 +924,14 @@ func normalizeRequestLimits(
 ) (RequestLimits, error) {
 	out := input
 	var err error
+	out.MaxFuel, err = inheritRequestLimit(
+		"MaxFuel",
+		out.MaxFuel,
+		ceiling.MaxFuel,
+	)
+	if err != nil {
+		return RequestLimits{}, err
+	}
 	out.MaxSourceBytes, err = inheritRequestLimit(
 		"MaxSourceBytes",
 		out.MaxSourceBytes,
@@ -1230,6 +1265,26 @@ func callU32(ctx context.Context, mod api.Module, name string) (uint32, error) {
 	return uint32(values[0]), nil //nolint:gosec // the preceding check rejects values outside uint32.
 }
 
+func (e *Engine) callU32(
+	ctx context.Context,
+	mod api.Module,
+	name string,
+	fuelLimit uint64,
+) (uint32, error) {
+	function := mod.ExportedFunction(name)
+	if function == nil {
+		return 0, &ABIError{Err: fmt.Errorf("missing %s export", name)}
+	}
+	values, err := function.Call(ctx)
+	if err != nil {
+		return 0, e.runtimeError(ctx, name, fuelLimit, err)
+	}
+	if len(values) != 1 || values[0] > math.MaxUint32 {
+		return 0, &ABIError{Err: fmt.Errorf("%s returned invalid uint32", name)}
+	}
+	return uint32(values[0]), nil //nolint:gosec // the preceding check rejects values outside uint32.
+}
+
 func readHostRequest(mod api.Module, ptr, length, limit uint32) ([]byte, error) {
 	if length == 0 {
 		return nil, errors.New("host request is empty")
@@ -1292,22 +1347,23 @@ func readGuestResult(mod api.Module, ptr, length, limit uint32) ([]byte, error) 
 	return append([]byte(nil), memory...), nil
 }
 
-func readGuestTrace(
+func (e *Engine) readGuestTrace(
 	ctx context.Context,
 	mod api.Module,
 	limit uint32,
+	fuelLimit uint64,
 ) ([]byte, bool, error) {
-	ptr, err := callU32(ctx, mod, "sonnetbox_trace_ptr")
+	ptr, err := e.callU32(ctx, mod, "sonnetbox_trace_ptr", fuelLimit)
 	if err != nil {
-		return nil, false, &ABIError{Err: err}
+		return nil, false, err
 	}
-	length, err := callU32(ctx, mod, "sonnetbox_trace_len")
+	length, err := e.callU32(ctx, mod, "sonnetbox_trace_len", fuelLimit)
 	if err != nil {
-		return nil, false, &ABIError{Err: err}
+		return nil, false, err
 	}
-	truncated, err := callU32(ctx, mod, "sonnetbox_trace_truncated")
+	truncated, err := e.callU32(ctx, mod, "sonnetbox_trace_truncated", fuelLimit)
 	if err != nil {
-		return nil, false, &ABIError{Err: err}
+		return nil, false, err
 	}
 	if truncated > 1 {
 		return nil, false, &ABIError{Err: errors.New("guest returned invalid trace truncation flag")}
@@ -1369,6 +1425,7 @@ func (s *invocationState) error() error {
 func (s *invocationState) stats(
 	queueDuration time.Duration,
 	executionDuration time.Duration,
+	fuelConsumed uint64,
 	traceBytes int,
 	traceTruncated bool,
 ) EvaluationStats {
@@ -1377,6 +1434,7 @@ func (s *invocationState) stats(
 	return EvaluationStats{
 		QueueDuration:     queueDuration,
 		ExecutionDuration: executionDuration,
+		FuelConsumed:      fuelConsumed,
 		ImportResolutions: s.importCalls,
 		ImportBytes:       s.importBytes,
 		CapabilityCalls:   s.capabilityCalls,
@@ -1385,9 +1443,22 @@ func (s *invocationState) stats(
 	}
 }
 
-func (e *Engine) runtimeError(ctx context.Context, operation string, err error) error {
+func (e *Engine) runtimeError(
+	ctx context.Context,
+	operation string,
+	fuelLimit uint64,
+	err error,
+) error {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return &CancellationError{Err: ctxErr}
+	}
+	if errors.Is(err, fuel.ErrOutOfFuel) {
+		return &LimitError{
+			Resource: "fuel",
+			Limit:    fuelLimit,
+			Actual:   fuelLimit + 1,
+			Err:      err,
+		}
 	}
 	message := strings.ToLower(err.Error())
 	if strings.Contains(message, "out of memory") ||

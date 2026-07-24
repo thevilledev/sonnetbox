@@ -72,8 +72,8 @@ curl --fail-with-body \
 JSON
 ```
 
-The response wraps the rendered JSON together with bounded trace output and
-host-observed statistics:
+The response wraps the rendered JSON together with bounded trace output,
+deterministic fuel consumption, and host-observed statistics:
 
 ```json
 {
@@ -88,6 +88,7 @@ host-observed statistics:
   "stats": {
     "queue_duration": "...",
     "execution_duration": "...",
+    "fuel_consumed": 12345678,
     "import_resolutions": 1,
     "import_bytes": 47,
     "capability_calls": 1,

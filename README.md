@@ -1,5 +1,9 @@
 # sonnetbox
 
+> **Wazero:** this project uses
+> [`github.com/thevilledev/wazero` at `b55482b`](https://github.com/thevilledev/wazero/commit/b55482bf4b0173930e869716cadc1a0662dc6916)
+> (`feat/fuel`, based on wazero v1.12.0).
+
 [![CI](https://github.com/thevilledev/sonnetbox/actions/workflows/ci.yml/badge.svg)](https://github.com/thevilledev/sonnetbox/actions/workflows/ci.yml)
 
 `sonnetbox` evaluates untrusted Jsonnet in a fresh WebAssembly sandbox. It
@@ -219,6 +223,7 @@ defaults:
 | Ceiling | Default |
 | --- | ---: |
 | Guest linear memory | 128 MiB |
+| Deterministic WASM fuel | 100,000,000 units |
 | Source / one import | 256 KiB each |
 | Rendered output | 1 MiB |
 | Cumulative imports | 2 MiB |
@@ -231,15 +236,16 @@ defaults:
 
 Invalid values and values above the library's hard ceilings are rejected.
 `Request.Limits` can lower every per-evaluation ceiling except memory and
-concurrency; it can never raise the engine policy. Use a context deadline as
-the CPU budget. Evaluations waiting for a concurrency slot also honor
-cancellation.
+concurrency; it can never raise the engine policy. Fuel deterministically
+bounds guest instruction work, while a context deadline remains the wall-clock
+backstop for host callbacks and evaluation. Evaluations waiting for a
+concurrency slot also honor cancellation.
 
 Set `Request.CaptureTrace` to collect bounded `std.trace` output in
-`Result.Trace`. `Result.Stats` reports queue and execution duration, import
-count and bytes, capability calls, trace bytes, and trace truncation. It is
-available on successful evaluations and is host-observed diagnostic data, not
-a billing or deterministic instruction counter.
+`Result.Trace`. `Result.Stats` reports deterministic fuel consumed, queue and
+execution duration, import count and bytes, capability calls, trace bytes, and
+trace truncation. Fuel is an abstract instruction unit, not elapsed time or a
+billing unit; the other fields are host-observed diagnostics.
 
 `Version()` reports the embedded go-jsonnet version and the private
 host/guest ABI version, which is useful in logs and compatibility reports.
@@ -268,18 +274,19 @@ trusted. Each evaluation:
 - validates every ABI function, pointer, length, and integer conversion;
 - exposes no ambient filesystem, environment, arguments, network, or
   inherited standard streams;
-- applies source, output, import, trace, host-call, capability, stack, linear
-  memory, and concurrency limits; and
+- applies source, output, import, trace, host-call, capability, stack,
+  deterministic instruction-fuel, linear-memory, and concurrency limits; and
 - closes and discards the guest after success, error, cancellation, or trap.
 
 The output limit is checked after go-jsonnet renders the complete result. The
 linear-memory ceiling bounds transient rendering allocations before that
 check.
 
-Wazero has no deterministic instruction-fuel budget. CPU control uses the
-caller's context deadline with `WithCloseOnContextDone(true)`, which
-terminates guest execution. A trusted host handler that ignores cancellation
-can still block its call.
+Wazero fuel deterministically terminates guest execution that exceeds the
+configured instruction budget. The caller's context deadline, enforced with
+`WithCloseOnContextDone(true)`, remains the wall-clock backstop. Trusted host
+handlers do not consume guest fuel and can still block if they ignore
+cancellation.
 
 The sandbox protects the host from adversarial Jsonnet, not from malicious
 importers or capabilities running as ordinary Go code. `Engine.Close` is
