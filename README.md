@@ -61,6 +61,9 @@ Create one long-lived `Engine` per policy profile. It compiles the embedded
 module once, is safe for concurrent evaluation, and creates a fresh guest for
 every request. Do not create an engine per evaluation.
 
+For runnable programs that progress from an inline evaluation to a
+request-serving integration, see the [examples](examples/README.md).
+
 For a current go-jsonnet codebase, see [MIGRATING.md](MIGRATING.md) for the
 compatibility contract, before-and-after code, supported API matrix, and
 rollout checklist.
