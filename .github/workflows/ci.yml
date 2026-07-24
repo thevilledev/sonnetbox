@@ -76,6 +76,81 @@ jobs:
       - name: Run tests with coverage floor
         run: make coverage
 
+  examples:
+    name: Examples
+    runs-on: avrea-ubuntu-latest-2-vcpu
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: .go-version
+          cache-dependency-path: go.sum
+      - name: Compile examples
+        run: |
+          mkdir -p "${RUNNER_TEMP}/sonnetbox-examples"
+          go build -o "${RUNNER_TEMP}/sonnetbox-examples/hello" ./examples/hello
+          go build -o "${RUNNER_TEMP}/sonnetbox-examples/config-renderer" ./examples/config-renderer
+          go build -o "${RUNNER_TEMP}/sonnetbox-examples/http-service" ./examples/http-service
+      - name: Run command examples
+        run: |
+          set -euo pipefail
+
+          hello_output="$("${RUNNER_TEMP}/sonnetbox-examples/hello")"
+          grep -F '"message": "Hello, sonnetbox!"' <<<"${hello_output}"
+          grep -F '"sandboxed": true' <<<"${hello_output}"
+
+          config_output="$("${RUNNER_TEMP}/sonnetbox-examples/config-renderer" \
+            -workspace ./examples/config-renderer/jsonnet \
+            -environment production)"
+          grep -F '"environment": "production"' <<<"${config_output}"
+          grep -F '"replicas": 3' <<<"${config_output}"
+      - name: Run HTTP service example
+        run: |
+          set -euo pipefail
+
+          service_log="${RUNNER_TEMP}/sonnetbox-http-service.log"
+          "${RUNNER_TEMP}/sonnetbox-examples/http-service" \
+            -addr 127.0.0.1:18080 >"${service_log}" 2>&1 &
+          service_pid=$!
+          cleanup() {
+            kill -TERM "${service_pid}" 2>/dev/null || true
+            wait "${service_pid}" 2>/dev/null || true
+            cat "${service_log}"
+          }
+          trap cleanup EXIT
+
+          ready=false
+          for attempt in {1..30}; do
+            if curl --silent --output /dev/null http://127.0.0.1:18080/render; then
+              ready=true
+              break
+            fi
+            if ! kill -0 "${service_pid}" 2>/dev/null; then
+              echo "HTTP service exited before becoming ready"
+              exit 1
+            fi
+            sleep 1
+          done
+          if [[ "${ready}" != true ]]; then
+            echo "HTTP service did not become ready"
+            exit 1
+          fi
+
+          response="$(curl --silent --show-error --fail-with-body \
+            --max-time 30 \
+            --header 'Content-Type: application/json' \
+            --data-binary '{"customer":"ci","source":"local catalog = import \"../lib/catalog.libsonnet\"; { customer: std.extVar(\"customer\"), product: catalog(\"starter\") }"}' \
+            http://127.0.0.1:18080/render)"
+          grep -F '"customer":"ci"' <<<"${response}"
+          grep -F '"name":"Starter"' <<<"${response}"
+
   race:
     name: Race
     runs-on: avrea-ubuntu-latest-2-vcpu
