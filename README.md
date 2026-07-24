@@ -13,8 +13,10 @@ Use the core API for new integrations. Existing go-jsonnet applications can
 start with the opt-in `compat/gojsonnet` package, which keeps the familiar VM
 workflow while adding contexts and an explicit sandbox boundary.
 
-The current host API is for Go. C++/libjsonnet applications need a Go service
-or sidecar boundary; there is not yet a C ABI or drop-in `jsonnet` CLI.
+The host API is for Go, and the `sonnetbox` command provides a secure,
+intentionally bounded subset of the `jsonnet` CLI workflow. It is not a
+drop-in replacement. C++/libjsonnet applications still need the CLI, a Go
+service, or a sidecar boundary; there is not yet a C ABI.
 
 The module requires Go 1.25.12 or newer. It uses no Cgo, C++, Wasmtime, shared
 libraries, or go-jsonnet's browser-only `js/wasm` artifact.
@@ -67,6 +69,74 @@ request-serving integration, see the [examples](examples/README.md).
 For a current go-jsonnet codebase, see [MIGRATING.md](MIGRATING.md) for the
 compatibility contract, before-and-after code, supported API matrix, and
 rollout checklist.
+
+## Command-line usage
+
+Install the Cgo-free command directly:
+
+```sh
+go install github.com/thevilledev/sonnetbox/cmd/sonnetbox@latest
+```
+
+Or build `build/sonnetbox` from a checkout:
+
+```sh
+make cli
+```
+
+Evaluate a file. Without `--root`, the file's containing directory is the
+entire read-only import workspace:
+
+```sh
+sonnetbox config/main.jsonnet
+```
+
+Grant a larger workspace explicitly when the program imports from parent or
+library directories. The entry filename and `-J` paths are interpreted
+relative to that root, and the rightmost library path wins:
+
+```sh
+sonnetbox \
+  --root ./jsonnet \
+  -J vendor \
+  -J lib \
+  -V environment=production \
+  apps/main.jsonnet
+```
+
+Inline source and stdin have no importer unless `--root` is supplied:
+
+```sh
+sonnetbox -e -S '"hello"'
+printf '%s\n' 'import "data.libsonnet"' |
+  sonnetbox --root ./jsonnet -
+```
+
+The familiar output modes are available:
+
+```sh
+sonnetbox -o result.json config.jsonnet
+sonnetbox -m generated -c files.jsonnet
+sonnetbox -y stream.jsonnet
+```
+
+Run `sonnetbox --help` for the complete supported flag set. Every evaluation
+uses a fresh WASM guest, the library's default resource ceilings, and a
+five-second deadline configurable with a positive `--timeout` duration.
+`std.trace` is bounded and written to stderr. Multi-file names are
+source-controlled, so the command rejects absolute, non-canonical, and
+traversing names and confines writes beneath the requested output directory.
+
+This is deliberately a secure subset rather than a drop-in `jsonnet`
+replacement:
+
+- `JSONNET_PATH` is ignored;
+- `--ext-str`, `--ext-code`, `--tla-str`, and `--tla-code` require
+  `name=value` and never infer values from the environment;
+- variable-file flags, native functions, formatter and linter commands, and
+  exact upstream error text are not supported; and
+- the operator-selected input, workspace, output file, and output directory
+  are host-side grants, while Jsonnet itself receives no ambient host access.
 
 ## Evaluation
 

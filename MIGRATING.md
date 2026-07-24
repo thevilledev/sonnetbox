@@ -257,12 +257,18 @@ unsupported APIs.
 
 ## C++ and CLI callers
 
-The repository currently provides a Go host API, not a drop-in replacement for
-libjsonnet or the `jsonnet` executable. A C++ application can adopt the
-sandbox today by calling a small Go service or sidecar whose API accepts
-source, virtual files, variables, arguments, and a policy identifier.
+The repository provides a Go host API and the intentionally bounded
+`sonnetbox` command, not a drop-in replacement for libjsonnet or the `jsonnet`
+executable. The command supports common evaluation, variable, argument, and
+output workflows while requiring an explicit or tightly defaulted workspace,
+fixed resource ceilings, and a deadline. See the README's command-line section
+for the supported flags and intentional incompatibilities.
+
+A C++ application can adopt the sandbox through the command or by calling a
+small Go service or sidecar whose API accepts source, virtual files, variables,
+arguments, and a policy identifier.
 
 That service boundary should not accept arbitrary host paths or generic native
 functions. Treat imports and capabilities as named server-side policies. A
-stable C ABI or compatible CLI would be a separate product surface and is not
-currently guaranteed.
+stable C ABI or fully compatible CLI remains a separate product surface and is
+not currently guaranteed.

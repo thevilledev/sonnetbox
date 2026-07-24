@@ -13,8 +13,13 @@ WASM_CHECKSUM := internal/guestblob/sonnetbox.wasm.sha256
 GUEST := ./cmd/sonnetbox-guest
 WASM_FLAGS := -trimpath -buildvcs=false -ldflags=-buildid= -buildmode=c-shared
 
-.PHONY: fmt fmt-check lint mod-check test coverage race fuzz fuzz-smoke \
+.PHONY: cli fmt fmt-check lint mod-check test coverage race fuzz fuzz-smoke \
 	no-cgo wasm wasm-check check ci
+
+cli:
+	@mkdir -p $(BUILD_DIR)
+	CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -trimpath \
+		-o $(BUILD_DIR)/sonnetbox ./cmd/sonnetbox
 
 fmt:
 	$(GOLANGCI_LINT) fmt

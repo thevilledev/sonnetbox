@@ -1,0 +1,629 @@
+// Package cli implements the secure sonnetbox command-line interface.
+package cli
+
+import (
+	"bytes"
+	"context"
+	"debug/buildinfo"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"path"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/thevilledev/sonnetbox"
+)
+
+const (
+	defaultTimeout        = 5 * time.Second
+	defaultMaxSourceBytes = 256 << 10
+)
+
+type config struct {
+	input               string
+	exec                bool
+	jpaths              []string
+	outputFile          string
+	multiDir            string
+	createOutputDirs    bool
+	stream              bool
+	stringOutput        bool
+	omitTrailingNewline bool
+	maxStack            int
+	extVars             map[string]string
+	extCode             map[string]string
+	tlaVars             map[string]string
+	tlaCode             map[string]string
+	root                string
+	timeout             time.Duration
+	help                bool
+	version             bool
+}
+
+// Run executes the command with explicit process dependencies and returns its
+// exit status.
+func Run(
+	ctx context.Context,
+	args []string,
+	stdin io.Reader,
+	stdout io.Writer,
+	stderr io.Writer,
+) int {
+	cfg, err := parseArgs(args)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "sonnetbox: %v\n\n", err)
+		writeUsage(stderr)
+		return 1
+	}
+	if cfg.help {
+		writeUsage(stdout)
+		return 0
+	}
+	if cfg.version {
+		writeVersion(stdout)
+		return 0
+	}
+	if err := execute(ctx, cfg, stdin, stdout, stderr); err != nil {
+		_, _ = fmt.Fprintf(stderr, "sonnetbox: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+func parseArgs(args []string) (config, error) {
+	cfg := config{
+		timeout: defaultTimeout,
+		extVars: make(map[string]string),
+		extCode: make(map[string]string),
+		tlaVars: make(map[string]string),
+		tlaCode: make(map[string]string),
+	}
+	var positional []string
+	options := true
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if options && arg == "--" {
+			options = false
+			continue
+		}
+		if !options || arg == "-" || !strings.HasPrefix(arg, "-") {
+			positional = append(positional, arg)
+			continue
+		}
+
+		name, attached, hasAttached := strings.Cut(arg, "=")
+		next := func() (string, error) {
+			if hasAttached {
+				return attached, nil
+			}
+			i++
+			if i >= len(args) {
+				return "", fmt.Errorf("%s requires a value", name)
+			}
+			return args[i], nil
+		}
+		switch name {
+		case "-h", "--help":
+			cfg.help = true
+		case "--version":
+			cfg.version = true
+		case "-e", "--exec":
+			cfg.exec = true
+		case "-J", "--jpath":
+			value, err := next()
+			if err != nil {
+				return config{}, err
+			}
+			if value == "" {
+				return config{}, errors.New("JPath is empty")
+			}
+			cfg.jpaths = append(cfg.jpaths, value)
+		case "-o", "--output-file":
+			value, err := next()
+			if err != nil {
+				return config{}, err
+			}
+			if value == "" {
+				return config{}, errors.New("output file is empty")
+			}
+			cfg.outputFile = value
+		case "-m", "--multi":
+			value, err := next()
+			if err != nil {
+				return config{}, err
+			}
+			if value == "" {
+				return config{}, errors.New("multi-file output directory is empty")
+			}
+			cfg.multiDir = value
+		case "-c", "--create-output-dirs":
+			cfg.createOutputDirs = true
+		case "-y", "--yaml-stream":
+			cfg.stream = true
+		case "-S", "--string":
+			cfg.stringOutput = true
+		case "--no-trailing-newline":
+			cfg.omitTrailingNewline = true
+		case "-s", "--max-stack":
+			value, err := next()
+			if err != nil {
+				return config{}, err
+			}
+			stack, err := strconv.Atoi(value)
+			if err != nil || stack < 1 {
+				return config{}, fmt.Errorf("invalid max stack %q", value)
+			}
+			cfg.maxStack = stack
+		case "-V", "--ext-str":
+			if err := parseBinding(next, cfg.extVars); err != nil {
+				return config{}, fmt.Errorf("external string: %w", err)
+			}
+		case "--ext-code":
+			if err := parseBinding(next, cfg.extCode); err != nil {
+				return config{}, fmt.Errorf("external code: %w", err)
+			}
+		case "-A", "--tla-str":
+			if err := parseBinding(next, cfg.tlaVars); err != nil {
+				return config{}, fmt.Errorf("top-level string: %w", err)
+			}
+		case "--tla-code":
+			if err := parseBinding(next, cfg.tlaCode); err != nil {
+				return config{}, fmt.Errorf("top-level code: %w", err)
+			}
+		case "--root":
+			value, err := next()
+			if err != nil {
+				return config{}, err
+			}
+			if value == "" {
+				return config{}, errors.New("workspace root is empty")
+			}
+			cfg.root = value
+		case "--timeout":
+			value, err := next()
+			if err != nil {
+				return config{}, err
+			}
+			timeout, err := time.ParseDuration(value)
+			if err != nil || timeout <= 0 {
+				return config{}, fmt.Errorf("invalid timeout %q: must be a positive duration", value)
+			}
+			cfg.timeout = timeout
+		default:
+			return config{}, fmt.Errorf("unrecognized option %q", arg)
+		}
+	}
+
+	if cfg.help || cfg.version {
+		return cfg, nil
+	}
+	if len(positional) != 1 {
+		return config{}, errors.New("exactly one filename, '-', or Jsonnet expression is required")
+	}
+	cfg.input = positional[0]
+	if cfg.stream && cfg.multiDir != "" {
+		return config{}, errors.New("--yaml-stream and --multi cannot be combined")
+	}
+	if cfg.stream && cfg.omitTrailingNewline {
+		return config{}, errors.New("--no-trailing-newline cannot be used with --yaml-stream")
+	}
+	if cfg.createOutputDirs && cfg.outputFile == "" && cfg.multiDir == "" {
+		return config{}, errors.New("--create-output-dirs requires --output-file or --multi")
+	}
+	return cfg, nil
+}
+
+func parseBinding(
+	next func() (string, error),
+	target map[string]string,
+) error {
+	value, err := next()
+	if err != nil {
+		return err
+	}
+	name, content, ok := strings.Cut(value, "=")
+	if !ok || name == "" {
+		return fmt.Errorf("%q is not in name=value form", value)
+	}
+	target[name] = content
+	return nil
+}
+
+func execute(
+	ctx context.Context,
+	cfg config,
+	stdin io.Reader,
+	stdout io.Writer,
+	stderr io.Writer,
+) error {
+	if ctx == nil {
+		return errors.New("context is nil")
+	}
+	importer, filename, source, err := prepareInput(ctx, cfg, stdin)
+	if err != nil {
+		return err
+	}
+	if importer != nil {
+		defer func() {
+			_ = importer.Close()
+		}()
+	}
+
+	engine, err := sonnetbox.NewEngine(ctx, sonnetbox.EngineConfig{MaxStack: cfg.maxStack})
+	if err != nil {
+		return fmt.Errorf("initialize evaluator: %w", err)
+	}
+	defer engine.Close(context.WithoutCancel(ctx)) //nolint:errcheck // the evaluation result is authoritative.
+
+	evalCtx, cancel := context.WithTimeout(ctx, cfg.timeout)
+	defer cancel()
+	var requestImporter sonnetbox.Importer
+	if importer != nil {
+		requestImporter = importer
+	}
+	request := sonnetbox.Request{
+		Filename:            filename,
+		Source:              source,
+		ExtVars:             cfg.extVars,
+		ExtCode:             cfg.extCode,
+		TLAVars:             cfg.tlaVars,
+		TLACode:             cfg.tlaCode,
+		Importer:            requestImporter,
+		OutputMode:          outputMode(cfg),
+		StringOutput:        cfg.stringOutput,
+		OmitTrailingNewline: cfg.omitTrailingNewline,
+		CaptureTrace:        true,
+	}
+	var result sonnetbox.Result
+	if cfg.exec || cfg.input == "-" {
+		result, err = engine.EvaluateAnonymous(evalCtx, request)
+	} else {
+		request.Source = ""
+		result, err = engine.EvaluateFile(evalCtx, filename, request)
+	}
+	if err != nil {
+		return err
+	}
+	if len(result.Trace) > 0 {
+		if _, err := stderr.Write(result.Trace); err != nil {
+			return fmt.Errorf("write trace: %w", err)
+		}
+	}
+	if result.Stats.TraceTruncated {
+		if _, err := fmt.Fprintln(stderr, "sonnetbox: std.trace output truncated"); err != nil {
+			return fmt.Errorf("write trace warning: %w", err)
+		}
+	}
+	return writeResult(cfg, result, stdout)
+}
+
+func prepareInput(
+	ctx context.Context,
+	cfg config,
+	stdin io.Reader,
+) (*sonnetbox.WorkspaceImporter, string, string, error) {
+	if cfg.exec {
+		importer, err := openWorkspace(cfg.root, cfg.jpaths)
+		return importer, "<cmdline>", cfg.input, err
+	}
+	if cfg.input == "-" {
+		source, err := readBounded(ctx, stdin, defaultMaxSourceBytes)
+		if err != nil {
+			return nil, "", "", err
+		}
+		importer, err := openWorkspace(cfg.root, cfg.jpaths)
+		return importer, "<stdin>", string(source), err
+	}
+
+	root, filename, err := fileWorkspace(cfg.root, cfg.input)
+	if err != nil {
+		return nil, "", "", err
+	}
+	importer, err := openWorkspace(root, cfg.jpaths)
+	return importer, filename, "", err
+}
+
+func openWorkspace(root string, jpaths []string) (*sonnetbox.WorkspaceImporter, error) {
+	if root == "" {
+		if len(jpaths) > 0 {
+			return nil, errors.New("--jpath requires a file input or --root")
+		}
+		return nil, nil
+	}
+	libraryPaths := make([]string, 0, len(jpaths))
+	for _, jpath := range jpaths {
+		virtual, err := pathWithinRoot(root, jpath)
+		if err != nil {
+			return nil, fmt.Errorf("JPath %q: %w", jpath, err)
+		}
+		libraryPaths = append(libraryPaths, virtual)
+	}
+	options := []sonnetbox.WorkspaceOption(nil)
+	if len(libraryPaths) > 0 {
+		options = append(options, sonnetbox.WithLibraryPaths(libraryPaths...))
+	}
+	importer, err := sonnetbox.NewWorkspaceImporter(root, options...)
+	if err != nil {
+		return nil, err
+	}
+	return importer, nil
+}
+
+func fileWorkspace(configuredRoot, input string) (string, string, error) {
+	var root string
+	var entry string
+	var err error
+	if configuredRoot == "" {
+		entry, err = filepath.Abs(input)
+		if err != nil {
+			return "", "", fmt.Errorf("resolve input file: %w", err)
+		}
+		root = filepath.Dir(entry)
+	} else {
+		root, err = filepath.Abs(configuredRoot)
+		if err != nil {
+			return "", "", fmt.Errorf("resolve workspace root: %w", err)
+		}
+		if filepath.IsAbs(input) {
+			entry = filepath.Clean(input)
+		} else {
+			entry = filepath.Join(root, input)
+		}
+	}
+	filename, err := relativeVirtualPath(root, entry)
+	if err != nil {
+		return "", "", fmt.Errorf("input file %q: %w", input, err)
+	}
+	return root, filename, nil
+}
+
+func pathWithinRoot(root, name string) (string, error) {
+	var candidate string
+	if filepath.IsAbs(name) {
+		candidate = filepath.Clean(name)
+	} else {
+		candidate = filepath.Join(root, name)
+	}
+	return relativeVirtualPath(root, candidate)
+}
+
+func relativeVirtualPath(root, candidate string) (string, error) {
+	absoluteRoot, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	absoluteCandidate, err := filepath.Abs(candidate)
+	if err != nil {
+		return "", err
+	}
+	relative, err := filepath.Rel(absoluteRoot, absoluteCandidate)
+	if err != nil {
+		return "", err
+	}
+	if relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", errors.New("path is outside the workspace root")
+	}
+	return filepath.ToSlash(relative), nil
+}
+
+func readBounded(ctx context.Context, input io.Reader, limit int64) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	data, err := io.ReadAll(io.LimitReader(input, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("read stdin: %w", err)
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("stdin exceeds source limit of %d bytes", limit)
+	}
+	return data, nil
+}
+
+func outputMode(cfg config) sonnetbox.OutputMode {
+	switch {
+	case cfg.multiDir != "":
+		return sonnetbox.OutputModeMulti
+	case cfg.stream:
+		return sonnetbox.OutputModeStream
+	default:
+		return sonnetbox.OutputModeSingle
+	}
+}
+
+func writeResult(cfg config, result sonnetbox.Result, stdout io.Writer) (returnErr error) {
+	if cfg.multiDir != "" {
+		return writeMulti(cfg, result.Files, stdout)
+	}
+	writer, closeWriter, err := outputWriter(cfg.outputFile, cfg.createOutputDirs, stdout)
+	if err != nil {
+		return err
+	}
+	if closeWriter != nil {
+		defer func() {
+			if err := closeWriter(); err != nil && returnErr == nil {
+				returnErr = fmt.Errorf("close output file: %w", err)
+			}
+		}()
+	}
+	if cfg.stream {
+		for _, document := range result.Documents {
+			if _, err := io.WriteString(writer, "---\n"); err != nil {
+				return fmt.Errorf("write output: %w", err)
+			}
+			if _, err := writer.Write(document); err != nil {
+				return fmt.Errorf("write output: %w", err)
+			}
+		}
+		if len(result.Documents) > 0 {
+			if _, err := io.WriteString(writer, "...\n"); err != nil {
+				return fmt.Errorf("write output: %w", err)
+			}
+		}
+		return nil
+	}
+	if _, err := writer.Write(result.Output); err != nil {
+		return fmt.Errorf("write output: %w", err)
+	}
+	return nil
+}
+
+func outputWriter(
+	filename string,
+	createDirs bool,
+	stdout io.Writer,
+) (io.Writer, func() error, error) {
+	if filename == "" {
+		return stdout, nil, nil
+	}
+	if createDirs {
+		parent := filepath.Dir(filename)
+		if err := os.MkdirAll(parent, 0o750); err != nil {
+			return nil, nil, fmt.Errorf("create output directory: %w", err)
+		}
+	}
+	// The output path is an explicit operator grant, never a Jsonnet-generated name.
+	file, err := os.OpenFile( //nolint:gosec // See the operator-grant comment above.
+		filename,
+		os.O_WRONLY|os.O_CREATE|os.O_TRUNC,
+		0o600,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open output file: %w", err)
+	}
+	return file, file.Close, nil
+}
+
+func writeMulti(
+	cfg config,
+	files map[string][]byte,
+	stdout io.Writer,
+) (returnErr error) {
+	if cfg.createOutputDirs {
+		if err := os.MkdirAll(cfg.multiDir, 0o750); err != nil {
+			return fmt.Errorf("create multi-file output directory: %w", err)
+		}
+	}
+	root, err := os.OpenRoot(cfg.multiDir)
+	if err != nil {
+		return fmt.Errorf("open multi-file output directory: %w", err)
+	}
+	defer func() {
+		if err := root.Close(); err != nil && returnErr == nil {
+			returnErr = fmt.Errorf("close multi-file output directory: %w", err)
+		}
+	}()
+
+	manifest, closeManifest, err := outputWriter(cfg.outputFile, cfg.createOutputDirs, stdout)
+	if err != nil {
+		return err
+	}
+	if closeManifest != nil {
+		defer func() {
+			if err := closeManifest(); err != nil && returnErr == nil {
+				returnErr = fmt.Errorf("close multi-file manifest: %w", err)
+			}
+		}()
+	}
+
+	names := make([]string, 0, len(files))
+	for name := range files {
+		if err := validateOutputName(name); err != nil {
+			return fmt.Errorf("unsafe multi-file output name %q: %w", name, err)
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		hostName := filepath.FromSlash(name)
+		if _, err := fmt.Fprintln(manifest, filepath.Join(cfg.multiDir, hostName)); err != nil {
+			return fmt.Errorf("write multi-file manifest: %w", err)
+		}
+		content := files[name]
+		existing, err := root.ReadFile(hostName)
+		if err == nil && bytes.Equal(existing, content) {
+			continue
+		}
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("read existing output %q: %w", name, err)
+		}
+		if cfg.createOutputDirs {
+			if err := root.MkdirAll(filepath.Dir(hostName), 0o755); err != nil {
+				return fmt.Errorf("create output parent for %q: %w", name, err)
+			}
+		}
+		if err := root.WriteFile(hostName, content, 0o600); err != nil {
+			return fmt.Errorf("write output %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func validateOutputName(name string) error {
+	if name == "" || strings.Contains(name, "\\") || path.IsAbs(name) {
+		return errors.New("name must be a nonempty relative slash path")
+	}
+	for part := range strings.SplitSeq(name, "/") {
+		if part == "" || part == "." || part == ".." {
+			return errors.New("name contains an empty or traversing component")
+		}
+	}
+	if path.Clean(name) != name {
+		return errors.New("name is not canonical")
+	}
+	return nil
+}
+
+func writeVersion(output io.Writer) {
+	version := "(devel)"
+	if executable, err := os.Executable(); err == nil {
+		if info, err := buildinfo.ReadFile(executable); err == nil && info.Main.Version != "" {
+			version = info.Main.Version
+		}
+	}
+	evaluator := sonnetbox.Version()
+	_, _ = fmt.Fprintf(
+		output,
+		"sonnetbox %s (jsonnet %s, ABI %d)\n",
+		version,
+		evaluator.Jsonnet,
+		evaluator.ABI,
+	)
+}
+
+func writeUsage(output io.Writer) {
+	_, _ = fmt.Fprintln(output, `Usage: sonnetbox [options] <filename|-|expression>
+
+Evaluate Jsonnet in a fresh WebAssembly sandbox.
+
+Input and imports:
+  -e, --exec                  Treat the positional input as Jsonnet code
+      --root <dir>            Grant a read-only import workspace
+  -J, --jpath <dir>           Add a library path beneath the workspace
+      --timeout <duration>    Evaluation deadline (default 5s)
+
+Variables and arguments (name=value is required):
+  -V, --ext-str <name=value>  External string
+      --ext-code <name=code>  External Jsonnet code
+  -A, --tla-str <name=value>  Top-level string argument
+      --tla-code <name=code>  Top-level Jsonnet argument
+
+Output:
+  -o, --output-file <file>    Write output instead of stdout
+  -m, --multi <dir>           Write a multi-file result beneath dir
+  -c, --create-output-dirs    Create output parent directories
+  -y, --yaml-stream           Write a stream of JSON documents
+  -S, --string                Manifest top-level strings as plain text
+      --no-trailing-newline   Omit the normal trailing newline
+  -s, --max-stack <frames>    Set the evaluator stack ceiling
+
+Other:
+  -h, --help                  Show this help
+      --version               Show Sonnetbox, Jsonnet, and ABI versions`)
+}
