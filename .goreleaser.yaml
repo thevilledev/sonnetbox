@@ -1,0 +1,55 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/goreleaser/goreleaser/v2.17.0/www/docs/static/schema.json
+version: 2
+
+project_name: sonnetbox
+
+before:
+  hooks:
+    - make wasm-check
+
+builds:
+  - id: sonnetbox
+    main: ./cmd/sonnetbox
+    binary: sonnetbox
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+      - -buildvcs=false
+    ldflags:
+      - >-
+        -s -w
+        -X github.com/thevilledev/sonnetbox/internal/cli.releaseVersion=v{{ .Version }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: sonnetbox
+    ids:
+      - sonnetbox
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+
+sboms:
+  - id: archives
+    artifacts: archive
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: git
+  sort: asc
+
+release:
+  prerelease: auto

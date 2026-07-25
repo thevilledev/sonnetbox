@@ -83,6 +83,15 @@ Install the Cgo-free command directly:
 go install github.com/thevilledev/sonnetbox/cmd/sonnetbox@latest
 ```
 
+Tagged releases also provide Linux, macOS, and Windows archives for amd64 and
+arm64. Each archive has an SPDX JSON SBOM and is covered by a keyless GitHub
+build-provenance attestation. After checking the downloaded archive against
+`checksums.txt`, verify its provenance with:
+
+```sh
+gh attestation verify --owner thevilledev sonnetbox_*.tar.gz
+```
+
 Or build `build/sonnetbox` from a checkout:
 
 ```sh

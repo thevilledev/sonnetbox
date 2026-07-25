@@ -25,6 +25,8 @@ const (
 	defaultMaxSourceBytes = 256 << 10
 )
 
+var releaseVersion string
+
 type config struct {
 	input               string
 	exec                bool
@@ -581,10 +583,13 @@ func validateOutputName(name string) error {
 }
 
 func writeVersion(output io.Writer) {
-	version := "(devel)"
-	if executable, err := os.Executable(); err == nil {
-		if info, err := buildinfo.ReadFile(executable); err == nil && info.Main.Version != "" {
-			version = info.Main.Version
+	version := releaseVersion
+	if version == "" {
+		version = "(devel)"
+		if executable, err := os.Executable(); err == nil {
+			if info, err := buildinfo.ReadFile(executable); err == nil && info.Main.Version != "" {
+				version = info.Main.Version
+			}
 		}
 	}
 	evaluator := sonnetbox.Version()
