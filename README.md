@@ -5,6 +5,7 @@
 > (`feat/fuel`, based on wazero v1.12.0).
 
 [![CI](https://github.com/thevilledev/sonnetbox/actions/workflows/ci.yml/badge.svg)](https://github.com/thevilledev/sonnetbox/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/thevilledev/sonnetbox.svg)](https://pkg.go.dev/github.com/thevilledev/sonnetbox)
 
 `sonnetbox` evaluates untrusted Jsonnet in a fresh WebAssembly sandbox. It
 embeds [go-jsonnet](https://github.com/google/go-jsonnet) in a Go WASI guest

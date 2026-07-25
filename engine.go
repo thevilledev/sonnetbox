@@ -63,7 +63,8 @@ var hardCeilings = EngineConfig{
 }
 
 // Engine owns a compiled guest module and instantiates a fresh guest for every
-// evaluation.
+// evaluation. An Engine is safe for concurrent use and must be closed when it
+// is no longer needed.
 type Engine struct {
 	mu       sync.RWMutex
 	closed   bool
@@ -86,8 +87,10 @@ type invocationState struct {
 	lastErr         error
 }
 
-// NewEngine compiles the embedded guest once and prepares a concurrent-safe
-// isolated Jsonnet engine.
+// NewEngine compiles the embedded guest and prepares an isolated Jsonnet
+// engine. Zero-valued config fields select documented defaults. The context
+// controls initialization and is not retained; callers must close the returned
+// Engine.
 func NewEngine(ctx context.Context, config EngineConfig) (*Engine, error) {
 	return newEngine(ctx, config, wazero.NewRuntimeConfig())
 }
@@ -178,7 +181,8 @@ func validateABIVersion(version uint32) error {
 	}
 }
 
-// Version reports the embedded go-jsonnet evaluator and host/guest ABI.
+// Version reports the embedded go-jsonnet evaluator and private host/guest ABI
+// versions.
 func Version() VersionInfo {
 	return VersionInfo{
 		Jsonnet: jsonnetVersion,
@@ -186,14 +190,16 @@ func Version() VersionInfo {
 	}
 }
 
-// Evaluate runs request in a fresh guest instance. It is safe to call
+// Evaluate evaluates Request.Source in a fresh guest instance, using
+// Request.Filename as the base for relative imports. It is safe to call
 // concurrently.
 func (e *Engine) Evaluate(ctx context.Context, request Request) (Result, error) {
 	return e.evaluate(ctx, request, protocol.InputSnippet)
 }
 
-// EvaluateAnonymous evaluates inline source whose filename is used only for
-// diagnostics. Imports are resolved from the importer's anonymous root.
+// EvaluateAnonymous evaluates Request.Source in a fresh guest instance.
+// Request.Filename is used only for diagnostics; imports are resolved from the
+// importer's root.
 func (e *Engine) EvaluateAnonymous(
 	ctx context.Context,
 	request Request,
@@ -202,7 +208,8 @@ func (e *Engine) EvaluateAnonymous(
 }
 
 // EvaluateFile loads filename through Request.Importer and evaluates it in a
-// fresh guest instance. Request.Source must be empty.
+// fresh guest instance. The filename must be a canonical virtual path, and
+// Request.Source must be empty.
 func (e *Engine) EvaluateFile(
 	ctx context.Context,
 	filename string,

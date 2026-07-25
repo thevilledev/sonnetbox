@@ -18,8 +18,8 @@ const (
 	OutputModeStream
 )
 
-// EngineConfig sets process-wide ceilings for an Engine. A zero field selects
-// the documented default for that field.
+// EngineConfig sets resource ceilings for an Engine. A zero field selects the
+// documented default for that field.
 type EngineConfig struct {
 	// MaxMemoryBytes limits each guest's linear memory. It must be a multiple
 	// of 64 KiB.
@@ -55,26 +55,42 @@ type EngineConfig struct {
 	MaxConcurrentEvaluations uint32
 }
 
-// RequestLimits lowers resource limits for one evaluation. Zero fields inherit
-// their EngineConfig ceiling.
+// RequestLimits lowers resource limits for one evaluation. A zero field
+// inherits the corresponding EngineConfig ceiling. A nonzero field cannot
+// exceed that ceiling.
 type RequestLimits struct {
-	MaxFuel              uint64
-	MaxSourceBytes       uint32
-	MaxOutputBytes       uint32
-	MaxStack             int
-	MaxImports           uint32
-	MaxImportBytes       uint32
-	MaxTotalImportBytes  uint64
-	MaxCapabilityCalls   uint32
-	MaxHostRequestBytes  uint32
+	// MaxFuel lowers EngineConfig.MaxFuel.
+	MaxFuel uint64
+	// MaxSourceBytes lowers EngineConfig.MaxSourceBytes.
+	MaxSourceBytes uint32
+	// MaxOutputBytes lowers EngineConfig.MaxOutputBytes.
+	MaxOutputBytes uint32
+	// MaxStack lowers EngineConfig.MaxStack.
+	MaxStack int
+	// MaxImports lowers EngineConfig.MaxImports.
+	MaxImports uint32
+	// MaxImportBytes lowers EngineConfig.MaxImportBytes.
+	MaxImportBytes uint32
+	// MaxTotalImportBytes lowers EngineConfig.MaxTotalImportBytes.
+	MaxTotalImportBytes uint64
+	// MaxCapabilityCalls lowers EngineConfig.MaxCapabilityCalls.
+	MaxCapabilityCalls uint32
+	// MaxHostRequestBytes lowers EngineConfig.MaxHostRequestBytes.
+	MaxHostRequestBytes uint32
+	// MaxHostResponseBytes lowers EngineConfig.MaxHostResponseBytes.
 	MaxHostResponseBytes uint32
-	MaxTraceBytes        uint32
+	// MaxTraceBytes lowers EngineConfig.MaxTraceBytes.
+	MaxTraceBytes uint32
 }
 
 // Importer resolves a Jsonnet import without granting guest filesystem access.
 // Implementations are trusted host code and must be safe for concurrent calls
-// from separate evaluations.
+// from separate evaluations. They should return errors wrapping
+// ErrImportDenied for paths that are absent or rejected by policy.
 type Importer interface {
+	// Import resolves importedPath relative to importedFrom. It returns a
+	// canonical virtual path and its content. The content returned for a
+	// canonical path must remain stable during an evaluation.
 	Import(
 		ctx context.Context,
 		importedFrom string,
@@ -126,20 +142,31 @@ type Request struct {
 }
 
 // EvaluationStats reports work for a successful evaluation. FuelConsumed is
-// deterministic for the same guest and input; durations and host-observed
-// counters are diagnostic.
+// deterministic for the same guest and input; durations and other
+// host-observed counters are diagnostic.
 type EvaluationStats struct {
-	QueueDuration     time.Duration
+	// QueueDuration is the time spent waiting for an engine concurrency slot.
+	QueueDuration time.Duration
+	// ExecutionDuration is the time from acquiring a slot through decoding the
+	// completed guest result.
 	ExecutionDuration time.Duration
-	FuelConsumed      uint64
+	// FuelConsumed is the deterministic WebAssembly instruction work used.
+	FuelConsumed uint64
+	// ImportResolutions is the number of import requests made by the guest.
 	ImportResolutions uint32
-	ImportBytes       uint64
-	CapabilityCalls   uint32
-	TraceBytes        uint32
-	TraceTruncated    bool
+	// ImportBytes is the cumulative size of imported content.
+	ImportBytes uint64
+	// CapabilityCalls is the number of native capability calls.
+	CapabilityCalls uint32
+	// TraceBytes is the number of captured std.trace bytes.
+	TraceBytes uint32
+	// TraceTruncated reports whether trace output exceeded its configured
+	// limit.
+	TraceTruncated bool
 }
 
-// Result is a completed Jsonnet evaluation.
+// Result is a completed Jsonnet evaluation. The request's OutputMode selects
+// Output, Files, or Documents for the manifested value.
 type Result struct {
 	// Output contains single-mode rendered JSON or StringOutput bytes.
 	Output []byte
@@ -155,6 +182,8 @@ type Result struct {
 
 // VersionInfo identifies the evaluator and private host/guest ABI.
 type VersionInfo struct {
+	// Jsonnet is the embedded go-jsonnet semantic version.
 	Jsonnet string
-	ABI     uint32
+	// ABI is the private sonnetbox host/guest protocol version.
+	ABI uint32
 }
