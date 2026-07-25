@@ -7,7 +7,7 @@ require (
 	github.com/tetratelabs/wazero v1.12.0
 )
 
-replace github.com/tetratelabs/wazero => github.com/thevilledev/wazero v0.0.0-20260724181017-b55482bf4b01
+replace github.com/tetratelabs/wazero => github.com/thevilledev/wazero v0.0.0-20260725184745-7ee9644faee7
 
 require (
 	golang.org/x/crypto v0.45.0 // indirect

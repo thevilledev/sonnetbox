@@ -124,9 +124,8 @@ func newEngine(
 
 	runtimeConfig = runtimeConfig.
 		WithMemoryLimitPages(uint32(pages)).
-		WithCloseOnContextDone(true).
-		WithFuelConsumption(true)
-	r := wazero.NewRuntimeWithConfig(ctx, runtimeConfig)
+		WithCloseOnContextDone(true)
+	r := wazero.NewRuntimeWithConfig(fuel.WithEnabled(ctx), runtimeConfig)
 	cleanupCtx := context.WithoutCancel(ctx)
 	cleanup := true
 	defer func(cleanupCtx context.Context) {
