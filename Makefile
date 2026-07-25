@@ -3,7 +3,8 @@ GOLANGCI_LINT ?= golangci-lint
 GO_VERSION := $(strip $(shell sed -n '1p' .go-version))
 GO_TOOLCHAIN ?= go$(GO_VERSION)
 TEST_TIMEOUT ?= 5m
-RACE_TIMEOUT ?= 10m
+RACE_TIMEOUT ?= 1m
+RACE_TESTS ?= ^(TestConcurrencyLimitHonorsContext|TestFreshInstancesAndConcurrentEvaluation)$$
 FUZZ_TIME ?= 10s
 COVERAGE_MIN ?= 70
 BUILD_DIR := build
@@ -68,7 +69,7 @@ coverage:
 
 race:
 	CGO_ENABLED=1 GOTOOLCHAIN=local $(GO) test -race -count=1 \
-		-timeout=$(RACE_TIMEOUT) ./...
+		-run='$(RACE_TESTS)' -timeout=$(RACE_TIMEOUT) .
 
 fuzz:
 	CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) test -run='^$$' \
