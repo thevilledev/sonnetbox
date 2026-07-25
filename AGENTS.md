@@ -14,7 +14,8 @@ These instructions apply to the entire repository.
   `.go-version`.
 
 Whenever either Go version changes, inspect `go.mod`, `.go-version`, the
-`test-minimum` workflow job, and the WASM build configuration together.
+`test-minimum` workflow job, the Dockerfile `GO_VERSION` default, and the
+WASM build configuration together.
 
 ## Rebuild the embedded WASM first
 

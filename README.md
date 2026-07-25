@@ -92,10 +92,26 @@ build-provenance attestation. After checking the downloaded archive against
 gh attestation verify --owner thevilledev sonnetbox_*.tar.gz
 ```
 
-Or build `build/sonnetbox` from a checkout:
+Multi-arch container images (`linux/amd64`, `linux/arm64`) publish to
+`ghcr.io/thevilledev/sonnetbox` on the same tags. Each image is Cosign
+keyless-signed and carries GitHub provenance plus SPDX SBOM attestations:
+
+```sh
+docker pull ghcr.io/thevilledev/sonnetbox:0.1.0
+gh attestation verify \
+  --owner thevilledev \
+  oci://ghcr.io/thevilledev/sonnetbox:0.1.0
+cosign verify \
+  --certificate-identity-regexp='https://github.com/thevilledev/sonnetbox/\.github/workflows/release\.yml@refs/tags/v.*' \
+  --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+  ghcr.io/thevilledev/sonnetbox:0.1.0
+```
+
+Or build `build/sonnetbox` / a local image from a checkout:
 
 ```sh
 make cli
+make docker
 ```
 
 Evaluate a file. Without `--root`, the file's containing directory is the

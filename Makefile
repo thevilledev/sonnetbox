@@ -12,14 +12,24 @@ WASM := internal/guestblob/sonnetbox.wasm
 WASM_CHECKSUM := internal/guestblob/sonnetbox.wasm.sha256
 GUEST := ./cmd/sonnetbox-guest
 WASM_FLAGS := -trimpath -buildvcs=false -ldflags=-buildid= -buildmode=c-shared
+IMAGE ?= ghcr.io/thevilledev/sonnetbox
+VERSION ?= dev
+DOCKER ?= docker
 
-.PHONY: cli fmt fmt-check lint mod-check test coverage race fuzz fuzz-smoke \
-	no-cgo wasm wasm-check check ci
+.PHONY: cli docker fmt fmt-check lint mod-check test coverage race fuzz \
+	fuzz-smoke no-cgo wasm wasm-check check ci
 
 cli:
 	@mkdir -p $(BUILD_DIR)
 	CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -trimpath \
 		-o $(BUILD_DIR)/sonnetbox ./cmd/sonnetbox
+
+docker:
+	$(DOCKER) build \
+		--build-arg GO_VERSION=$(GO_VERSION) \
+		--build-arg VERSION=$(VERSION) \
+		-t $(IMAGE):$(VERSION) \
+		.
 
 fmt:
 	$(GOLANGCI_LINT) fmt

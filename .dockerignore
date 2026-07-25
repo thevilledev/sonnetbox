@@ -1,0 +1,16 @@
+.git
+.github
+build
+dist
+**/*_test.go
+**/*.md
+**/testdata
+examples
+compat
+prek.toml
+.golangci.yml
+.golangci-lint-version
+.goreleaser.yaml
+LICENSE
+THIRD_PARTY_NOTICES.md
+*.tmp
