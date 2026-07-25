@@ -215,7 +215,7 @@ func DecodeMultiOutput(data []byte) (map[string][]byte, error) {
 		if _, exists := files[key]; exists {
 			return nil, fmt.Errorf("duplicate multi-file output %q", key)
 		}
-		files[key] = append([]byte(nil), output...)
+		files[key] = bytes.Clone(output)
 	}
 	if len(rest) != 0 {
 		return nil, errors.New("trailing multi-file output bytes")
@@ -255,7 +255,7 @@ func DecodeStreamOutput(data []byte) ([][]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		documents = append(documents, append([]byte(nil), document...))
+		documents = append(documents, bytes.Clone(document))
 	}
 	if len(rest) != 0 {
 		return nil, errors.New("trailing stream output bytes")

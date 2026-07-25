@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -104,6 +105,25 @@ func TestWorkspaceImporterRelativeAndLibraryResolution(t *testing.T) {
 		"../../outside.jsonnet",
 	); !errors.Is(err, ErrImportDenied) {
 		t.Fatalf("expected traversal denial, got %v", err)
+	}
+}
+
+func TestWithLibraryPathsValidatesBeforeAppending(t *testing.T) {
+	config := workspaceConfig{libraryPaths: []string{"existing"}}
+	if err := WithLibraryPaths("vendor", "overrides")(&config); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"existing", "vendor", "overrides"}
+	if !slices.Equal(config.libraryPaths, want) {
+		t.Fatalf("library paths = %q, want %q", config.libraryPaths, want)
+	}
+
+	config = workspaceConfig{libraryPaths: []string{"existing"}}
+	if err := WithLibraryPaths("vendor", "../outside")(&config); err == nil {
+		t.Fatal("expected invalid library path to be rejected")
+	}
+	if !slices.Equal(config.libraryPaths, []string{"existing"}) {
+		t.Fatalf("failed option mutated library paths: %q", config.libraryPaths)
 	}
 }
 

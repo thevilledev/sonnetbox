@@ -3,12 +3,14 @@
 package gojsonnet
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
 	"os"
+	"slices"
 	"sync"
 
 	nativejsonnet "github.com/google/go-jsonnet"
@@ -277,10 +279,10 @@ func (vm *VM) request(
 	return sonnetbox.Request{
 		Filename:            filename,
 		Source:              source,
-		ExtVars:             cloneMap(vm.extVars),
-		ExtCode:             cloneMap(vm.extCode),
-		TLAVars:             cloneMap(vm.tlaVars),
-		TLACode:             cloneMap(vm.tlaCode),
+		ExtVars:             maps.Clone(vm.extVars),
+		ExtCode:             maps.Clone(vm.extCode),
+		TLAVars:             maps.Clone(vm.tlaVars),
+		TLACode:             maps.Clone(vm.tlaCode),
 		Importer:            vm.importer,
 		Capabilities:        cloneCapabilities(vm.capabilities),
 		Limits:              limits,
@@ -303,18 +305,12 @@ func (vm *VM) writeTrace(
 	return result, nil
 }
 
-func cloneMap(input map[string]string) map[string]string {
-	output := make(map[string]string, len(input))
-	maps.Copy(output, input)
-	return output
-}
-
 func cloneCapabilities(
 	input map[string]sonnetbox.Capability,
 ) map[string]sonnetbox.Capability {
 	output := make(map[string]sonnetbox.Capability, len(input))
 	for name, capability := range input {
-		capability.Params = append([]string(nil), capability.Params...)
+		capability.Params = slices.Clone(capability.Params)
 		output[name] = capability
 	}
 	return output
@@ -378,5 +374,5 @@ func (adapter *ImporterAdapter) Import(
 	if err := ctx.Err(); err != nil {
 		return "", nil, err
 	}
-	return foundAt, append([]byte(nil), contents.Data()...), nil
+	return foundAt, bytes.Clone(contents.Data()), nil
 }

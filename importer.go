@@ -1,6 +1,7 @@
 package sonnetbox
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -32,7 +33,7 @@ func NewMapImporter(files map[string][]byte) (*MapImporter, error) {
 		if err := validateVirtualPath(name); err != nil {
 			return nil, &InvalidRequestError{Field: "import path", Err: err}
 		}
-		copied[name] = append([]byte(nil), content...)
+		copied[name] = bytes.Clone(content)
 	}
 	return &MapImporter{files: copied}, nil
 }
@@ -54,7 +55,7 @@ func (m *MapImporter) Import(
 	if !ok {
 		return "", nil, fmt.Errorf("%w: %q is missing", ErrImportDenied, canonical)
 	}
-	return canonical, append([]byte(nil), content...), nil
+	return canonical, bytes.Clone(content), nil
 }
 
 // WorkspaceOption configures a WorkspaceImporter.
@@ -68,7 +69,7 @@ type workspaceConfig struct {
 // reverse order after resolution relative to the importing file, matching
 // go-jsonnet FileImporter precedence.
 func WithLibraryPaths(paths ...string) WorkspaceOption {
-	copied := append([]string(nil), paths...)
+	copied := slices.Clone(paths)
 	return func(config *workspaceConfig) error {
 		for _, libraryPath := range copied {
 			if err := validateVirtualPath(libraryPath); err != nil {
@@ -118,7 +119,7 @@ func NewWorkspaceImporter(
 	}
 	return &WorkspaceImporter{
 		root:         root,
-		libraryPaths: append([]string(nil), config.libraryPaths...),
+		libraryPaths: slices.Clone(config.libraryPaths),
 	}, nil
 }
 
@@ -227,6 +228,10 @@ func resolveAgainstVirtualDirectory(directory, importedPath string) (string, err
 }
 
 func validateImportPath(name string) error {
+	return validateRelativeSlashPath(name)
+}
+
+func validateRelativeSlashPath(name string) error {
 	if name == "" {
 		return errors.New("path is empty")
 	}
@@ -249,22 +254,10 @@ func validateImportPath(name string) error {
 }
 
 func validateVirtualPath(name string) error {
-	if name == "" {
-		return errors.New("path is empty")
+	if err := validateRelativeSlashPath(name); err != nil {
+		return err
 	}
-	if !utf8.ValidString(name) {
-		return errors.New("path is not valid UTF-8")
-	}
-	if strings.ContainsRune(name, 0) {
-		return errors.New("path contains NUL")
-	}
-	if strings.Contains(name, "\\") {
-		return errors.New("backslashes are not allowed")
-	}
-	if strings.HasPrefix(name, "/") || path.IsAbs(name) {
-		return errors.New("absolute paths are not allowed")
-	}
-	if path.Clean(name) != name {
+	if cleaned := path.Clean(name); cleaned != name {
 		return errors.New("path is not canonical")
 	}
 	for part := range strings.SplitSeq(name, "/") {

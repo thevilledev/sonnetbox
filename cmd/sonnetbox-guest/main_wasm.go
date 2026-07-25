@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -366,7 +367,7 @@ func (b *hostBridge) Import(importedFrom, importedPath string) (jsonnet.Contents
 	}
 	content, exists := b.contents[decoded.Canonical]
 	if !exists {
-		content = jsonnet.MakeContentsRaw(append([]byte(nil), decoded.Content...))
+		content = jsonnet.MakeContentsRaw(bytes.Clone(decoded.Content))
 		b.contents[decoded.Canonical] = content
 	}
 	cached := importResult{content: content, foundAt: decoded.Canonical, err: err}
@@ -428,7 +429,7 @@ func (b *hostBridge) callHost(operation uint32, payload []byte) ([]byte, uint32,
 	if length > uint32(len(b.response)) {
 		return nil, protocol.HostMalformed, errors.New("host response length exceeds capacity")
 	}
-	body := append([]byte(nil), b.response[:length]...)
+	body := bytes.Clone(b.response[:length])
 	if status != protocol.HostOK {
 		message := string(body)
 		if message == "" {

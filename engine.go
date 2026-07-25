@@ -1,6 +1,7 @@
 package sonnetbox
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -604,7 +605,7 @@ func (e *Engine) resolveImport(
 	state.importBytes = nextTotal
 	state.mu.Unlock()
 
-	content = append([]byte{}, content...)
+	content = bytes.Clone(content)
 	payload, err := json.Marshal(protocol.ImportResponse{
 		Canonical: canonical,
 		Content:   content,
@@ -1177,9 +1178,9 @@ func prepareRequestMode(
 			}
 			seen[param] = struct{}{}
 		}
-		params := append([]string(nil), capability.Params...)
+		params := slices.Clone(capability.Params)
 		descriptors[name] = protocol.CapabilityDescriptor{Params: params}
-		capability.Params = append([]string(nil), params...)
+		capability.Params = slices.Clone(params)
 		capabilities[name] = capability
 	}
 	request.Capabilities = capabilities
@@ -1306,7 +1307,7 @@ func readHostRequest(mod api.Module, ptr, length, limit uint32) ([]byte, error) 
 	if !ok {
 		return nil, fmt.Errorf("host request range [%d,%d) is outside guest memory", ptr, uint64(ptr)+uint64(length))
 	}
-	return append([]byte(nil), memory...), nil
+	return bytes.Clone(memory), nil
 }
 
 func hostResponseBuffer(mod api.Module, ptr, capacity, limit uint32) ([]byte, error) {
@@ -1351,7 +1352,7 @@ func readGuestResult(mod api.Module, ptr, length, limit uint32) ([]byte, error) 
 	if !ok {
 		return nil, &ABIError{Err: errors.New("result pointer is outside guest memory")}
 	}
-	return append([]byte(nil), memory...), nil
+	return bytes.Clone(memory), nil
 }
 
 func (e *Engine) readGuestTrace(
