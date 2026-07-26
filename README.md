@@ -474,5 +474,6 @@ checks. `make conformance` compares against the pinned upstream Jsonnet suite,
 and `make bench` reports the performance figures published in
 [MIGRATING.md](MIGRATING.md).
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the local workflow and
+See [CHANGELOG.md](CHANGELOG.md) for release notes,
+[CONTRIBUTING.md](CONTRIBUTING.md) for the local workflow, and
 [SECURITY.md](SECURITY.md) for private vulnerability reporting.
