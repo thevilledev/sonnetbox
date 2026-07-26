@@ -15,8 +15,10 @@ import (
 type Option func(*engineOptions) error
 
 type engineOptions struct {
-	cache       *CompilationCache
-	interpreter bool
+	cache               *CompilationCache
+	interpreter         bool
+	defaultImporter     Importer
+	defaultCapabilities map[string]Capability
 }
 
 // CompilationCache stores compiled guest code so that engines can skip
@@ -99,6 +101,45 @@ func WithCompilationCache(cache *CompilationCache) Option {
 func WithInterpreter() Option {
 	return func(options *engineOptions) error {
 		options.interpreter = true
+		return nil
+	}
+}
+
+// WithDefaultImporter resolves imports for requests that do not set
+// Request.Importer. It lets an operator establish one import policy for every
+// evaluation instead of relying on each call site to attach the same importer.
+// A request that supplies its own importer uses that one instead.
+func WithDefaultImporter(importer Importer) Option {
+	return func(options *engineOptions) error {
+		if importer == nil {
+			return &InvalidRequestError{
+				Field: "default importer",
+				Err:   errors.New("importer is nil"),
+			}
+		}
+		options.defaultImporter = importer
+		return nil
+	}
+}
+
+// WithDefaultCapabilities registers native functions available to every
+// request. A request can replace one by declaring the same name, but cannot
+// remove it, so the set an operator grants is the widest any evaluation sees.
+//
+// Capabilities must be pure, because Jsonnet laziness makes the number and
+// order of calls unpredictable.
+func WithDefaultCapabilities(capabilities map[string]Capability) Option {
+	return func(options *engineOptions) error {
+		resolved := make(map[string]Capability, len(capabilities))
+		for name, capability := range capabilities {
+			params, err := validateCapability(name, capability)
+			if err != nil {
+				return err
+			}
+			capability.Params = params
+			resolved[name] = capability
+		}
+		options.defaultCapabilities = resolved
 		return nil
 	}
 }

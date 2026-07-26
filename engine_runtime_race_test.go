@@ -6,16 +6,12 @@ import (
 	"context"
 	"os"
 	"testing"
-
-	"github.com/tetratelabs/wazero"
 )
 
-var raceCompilationCache = wazero.NewCompilationCache()
+var raceCompilationCache = NewCompilationCache()
 
 func newEngineForTest(ctx context.Context, config EngineConfig) (*Engine, error) {
-	runtimeConfig := wazero.NewRuntimeConfigCompiler().
-		WithCompilationCache(raceCompilationCache)
-	return newEngine(ctx, config, runtimeConfig)
+	return NewEngine(ctx, config, WithCompilationCache(raceCompilationCache))
 }
 
 func TestMain(m *testing.M) {

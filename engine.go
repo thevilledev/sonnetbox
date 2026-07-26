@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"regexp"
 	"slices"
@@ -96,6 +97,10 @@ type Engine struct {
 	compiled wazero.CompiledModule
 	gate     chan struct{}
 	instance atomic.Uint64
+	// Set once during construction and never mutated, so evaluations read them
+	// without the lock.
+	defaultImporter     Importer
+	defaultCapabilities map[string]Capability
 }
 
 type invocationKey struct{}
@@ -127,13 +132,13 @@ func NewEngine(
 	if err != nil {
 		return nil, err
 	}
-	return newEngine(ctx, config, resolved.runtimeConfig())
+	return newEngine(ctx, config, resolved)
 }
 
 func newEngine(
 	ctx context.Context,
 	config EngineConfig,
-	runtimeConfig wazero.RuntimeConfig,
+	options engineOptions,
 ) (*Engine, error) {
 	if ctx == nil {
 		return nil, &InvalidRequestError{Field: "context", Err: errors.New("context is nil")}
@@ -143,12 +148,7 @@ func newEngine(
 	if err := ctx.Err(); err != nil {
 		return nil, &CancellationError{Err: err}
 	}
-	if runtimeConfig == nil {
-		return nil, &InvalidRequestError{
-			Field: "runtime config",
-			Err:   errors.New("runtime config is nil"),
-		}
-	}
+	runtimeConfig := options.runtimeConfig()
 	effective, err := normalizeConfig(config)
 	if err != nil {
 		return nil, err
@@ -177,9 +177,11 @@ func newEngine(
 		return nil, &ABIError{Err: fmt.Errorf("instantiate WASI: %w", err)}
 	}
 	e := &Engine{
-		config:  effective,
-		runtime: r,
-		gate:    make(chan struct{}, effective.MaxConcurrentEvaluations),
+		config:              effective,
+		runtime:             r,
+		gate:                make(chan struct{}, effective.MaxConcurrentEvaluations),
+		defaultImporter:     options.defaultImporter,
+		defaultCapabilities: options.defaultCapabilities,
 	}
 	if err := e.instantiateHostModule(ctx); err != nil {
 		return nil, &ABIError{Err: fmt.Errorf("instantiate host ABI: %w", err)}
@@ -279,6 +281,27 @@ func (e *Engine) EvaluateFile(
 	return e.evaluate(ctx, request, protocol.InputFile)
 }
 
+// withDefaults fills in the engine-level importer and capabilities configured
+// by the operator. A request wins where the two overlap, so a caller can
+// substitute its own importer or replace a capability by name, but cannot
+// remove a default it did not supply a replacement for.
+func (e *Engine) withDefaults(request Request) Request {
+	if request.Importer == nil {
+		request.Importer = e.defaultImporter
+	}
+	if len(e.defaultCapabilities) == 0 {
+		return request
+	}
+	merged := make(
+		map[string]Capability,
+		len(e.defaultCapabilities)+len(request.Capabilities),
+	)
+	maps.Copy(merged, e.defaultCapabilities)
+	maps.Copy(merged, request.Capabilities)
+	request.Capabilities = merged
+	return request
+}
+
 func (e *Engine) evaluate(
 	ctx context.Context,
 	request Request,
@@ -298,7 +321,7 @@ func (e *Engine) evaluate(
 	config := e.config
 	e.mu.RUnlock()
 
-	wireRequest, normalized, err := prepareRequestMode(request, config, inputMode)
+	wireRequest, normalized, err := prepareRequestMode(e.withDefaults(request), config, inputMode)
 	if err != nil {
 		return Result{}, err
 	}
@@ -1210,35 +1233,10 @@ func prepareRequestMode(
 	descriptors := make(map[string]protocol.CapabilityDescriptor, len(request.Capabilities))
 	capabilities := make(map[string]Capability, len(request.Capabilities))
 	for name, capability := range request.Capabilities {
-		if name == "" || !utf8.ValidString(name) {
-			return nil, Request{}, &InvalidRequestError{
-				Field: "Capabilities",
-				Err:   errors.New("capability name must be nonempty UTF-8"),
-			}
+		params, err := validateCapability(name, capability)
+		if err != nil {
+			return nil, Request{}, err
 		}
-		if capability.Call == nil {
-			return nil, Request{}, &InvalidRequestError{
-				Field: "Capabilities." + name,
-				Err:   errors.New("Call is nil"), //nolint:staticcheck // Preserve the existing public error text.
-			}
-		}
-		seen := make(map[string]struct{}, len(capability.Params))
-		for _, param := range capability.Params {
-			if !identifierPattern.MatchString(param) {
-				return nil, Request{}, &InvalidRequestError{
-					Field: "Capabilities." + name + ".Params",
-					Err:   fmt.Errorf("%q is not a Jsonnet identifier", param),
-				}
-			}
-			if _, exists := seen[param]; exists {
-				return nil, Request{}, &InvalidRequestError{
-					Field: "Capabilities." + name + ".Params",
-					Err:   fmt.Errorf("%q is duplicated", param),
-				}
-			}
-			seen[param] = struct{}{}
-		}
-		params := slices.Clone(capability.Params)
 		descriptors[name] = protocol.CapabilityDescriptor{Params: params}
 		capability.Params = slices.Clone(params)
 		capabilities[name] = capability
@@ -1298,6 +1296,41 @@ func decodeResult(mode OutputMode, payload []byte) (Result, error) {
 	default:
 		return Result{}, &ABIError{Err: fmt.Errorf("decode unknown output mode %d", mode)}
 	}
+}
+
+// validateCapability checks one declaration and returns its parameter names.
+// Per-request capabilities and engine defaults share it so both are held to
+// the same standard, whichever path registers them.
+func validateCapability(name string, capability Capability) ([]string, error) {
+	if name == "" || !utf8.ValidString(name) {
+		return nil, &InvalidRequestError{
+			Field: "Capabilities",
+			Err:   errors.New("capability name must be nonempty UTF-8"),
+		}
+	}
+	if capability.Call == nil {
+		return nil, &InvalidRequestError{
+			Field: "Capabilities." + name,
+			Err:   errors.New("Call is nil"), //nolint:staticcheck // Preserve the existing public error text.
+		}
+	}
+	seen := make(map[string]struct{}, len(capability.Params))
+	for _, param := range capability.Params {
+		if !identifierPattern.MatchString(param) {
+			return nil, &InvalidRequestError{
+				Field: "Capabilities." + name + ".Params",
+				Err:   fmt.Errorf("%q is not a Jsonnet identifier", param),
+			}
+		}
+		if _, exists := seen[param]; exists {
+			return nil, &InvalidRequestError{
+				Field: "Capabilities." + name + ".Params",
+				Err:   fmt.Errorf("%q is duplicated", param),
+			}
+		}
+		seen[param] = struct{}{}
+	}
+	return slices.Clone(capability.Params), nil
 }
 
 func validateTextMap(field string, values map[string]string) error {
