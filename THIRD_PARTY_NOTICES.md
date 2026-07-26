@@ -6,8 +6,8 @@ The generated WebAssembly reactor and host library use the following works:
   Copyright The Go Authors, BSD 3-Clause license.
 - `github.com/google/go-jsonnet`: Copyright Google Inc. and contributors,
   Apache License 2.0.
-- `github.com/tetratelabs/wazero`: Copyright 2020-2023 wazero authors,
-  Apache License 2.0.
+- `github.com/thevilledev/wazero`, a fork of `github.com/tetratelabs/wazero`:
+  Copyright 2020-2023 wazero authors, Apache License 2.0.
 - `sigs.k8s.io/yaml`: Copyright 2014 Sam Ghods and contributors, MIT license.
 
 Apache-licensed works are distributed under the terms in `LICENSE`.

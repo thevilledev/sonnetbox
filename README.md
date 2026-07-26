@@ -1,8 +1,12 @@
 # sonnetbox
 
-> **Wazero:** this project uses
-> [`github.com/thevilledev/wazero` at `b55482b`](https://github.com/thevilledev/wazero/commit/b55482bf4b0173930e869716cadc1a0662dc6916)
-> (`feat/fuel`, based on wazero v1.12.0).
+> **Wazero:** this project depends on
+> [`github.com/thevilledev/wazero`](https://github.com/thevilledev/wazero/commit/2a752f24e7e1056d7f1f017eba9ca9d755e34493)
+> (`feat/fuel-module-path`, based on wazero v1.12.0), a fork that adds the
+> deterministic `experimental/fuel` metering this sandbox needs. The fork
+> declares its own module path so that `go install` and ordinary module
+> resolution work; a `replace` directive would be ignored for anyone
+> depending on `sonnetbox`.
 
 [![CI](https://github.com/thevilledev/sonnetbox/actions/workflows/ci.yml/badge.svg)](https://github.com/thevilledev/sonnetbox/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/thevilledev/sonnetbox.svg)](https://pkg.go.dev/github.com/thevilledev/sonnetbox)

@@ -16,12 +16,12 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/tetratelabs/wazero"
-	"github.com/tetratelabs/wazero/api"
-	"github.com/tetratelabs/wazero/experimental/fuel"
-	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 	"github.com/thevilledev/sonnetbox/internal/guestblob"
 	"github.com/thevilledev/sonnetbox/internal/protocol"
+	"github.com/thevilledev/wazero"
+	"github.com/thevilledev/wazero/api"
+	"github.com/thevilledev/wazero/experimental/fuel"
+	"github.com/thevilledev/wazero/imports/wasi_snapshot_preview1"
 )
 
 const (

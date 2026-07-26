@@ -12,8 +12,8 @@ import (
 	"time"
 
 	jsonnet "github.com/google/go-jsonnet"
-	"github.com/tetratelabs/wazero/experimental/wazerotest"
 	"github.com/thevilledev/sonnetbox/internal/protocol"
+	"github.com/thevilledev/wazero/experimental/wazerotest"
 )
 
 func TestEvaluateBasicAndJsonnetError(t *testing.T) {

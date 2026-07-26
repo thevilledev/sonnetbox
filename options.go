@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/tetratelabs/wazero"
+	"github.com/thevilledev/wazero"
 )
 
 // Option customizes an Engine beyond the resource ceilings in EngineConfig.

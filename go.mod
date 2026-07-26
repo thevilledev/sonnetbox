@@ -4,10 +4,8 @@ go 1.25.12
 
 require (
 	github.com/google/go-jsonnet v0.22.0
-	github.com/tetratelabs/wazero v1.12.0
+	github.com/thevilledev/wazero v0.0.0-20260726091324-2a752f24e7e1
 )
-
-replace github.com/tetratelabs/wazero => github.com/thevilledev/wazero v0.0.0-20260725184745-7ee9644faee7
 
 require (
 	golang.org/x/crypto v0.45.0 // indirect
