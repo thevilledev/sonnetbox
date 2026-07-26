@@ -34,6 +34,7 @@ var identifierPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 var defaultConfig = EngineConfig{
 	MaxMemoryBytes:           128 << 20,
+	MaxWasmStackBytes:        50_000_000,
 	MaxFuel:                  100_000_000,
 	MaxSourceBytes:           256 << 10,
 	MaxOutputBytes:           1 << 20,
@@ -50,6 +51,7 @@ var defaultConfig = EngineConfig{
 
 var hardCeilings = EngineConfig{
 	MaxMemoryBytes:           1 << 30,
+	MaxWasmStackBytes:        256 << 20,
 	MaxFuel:                  10_000_000_000,
 	MaxSourceBytes:           16 << 20,
 	MaxOutputBytes:           64 << 20,
@@ -149,8 +151,11 @@ func newEngine(
 	if err := ctx.Err(); err != nil {
 		return nil, &CancellationError{Err: err}
 	}
-	runtimeConfig := options.runtimeConfig()
 	effective, err := normalizeConfig(config)
+	if err != nil {
+		return nil, err
+	}
+	runtimeConfig, err := options.runtimeConfig(effective.MaxWasmStackBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -942,6 +947,15 @@ func normalizeConfig(input EngineConfig) (EngineConfig, error) {
 		out.MaxMemoryBytes,
 		defaultConfig.MaxMemoryBytes,
 		hardCeilings.MaxMemoryBytes,
+	)
+	if err != nil {
+		return EngineConfig{}, err
+	}
+	out.MaxWasmStackBytes, err = normalizeUnsigned(
+		"MaxWasmStackBytes",
+		out.MaxWasmStackBytes,
+		defaultConfig.MaxWasmStackBytes,
+		hardCeilings.MaxWasmStackBytes,
 	)
 	if err != nil {
 		return EngineConfig{}, err

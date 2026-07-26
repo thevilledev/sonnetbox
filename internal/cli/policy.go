@@ -41,6 +41,13 @@ var policyFlags = map[string]policyFlag{
 			policy.MaxMemoryBytes = value
 		}),
 	},
+	"--max-wasm-stack": {
+		placeholder: "<size>",
+		usage:       "Compiled WebAssembly call-stack ceiling",
+		parse: byteSize64(func(policy *sonnetbox.EngineConfig, value uint64) {
+			policy.MaxWasmStackBytes = value
+		}),
+	},
 	"--max-fuel": {
 		placeholder: "<units>",
 		usage:       "Deterministic instruction budget",

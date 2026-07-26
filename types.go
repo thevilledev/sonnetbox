@@ -29,6 +29,9 @@ type EngineConfig struct {
 	// MaxMemoryBytes limits each guest's linear memory. It must be a multiple
 	// of 64 KiB.
 	MaxMemoryBytes uint64 `json:"max_memory_bytes"`
+	// MaxWasmStackBytes limits the compiled WebAssembly call stack. It is an
+	// engine-wide limit and has no effect when using WithInterpreter.
+	MaxWasmStackBytes uint64 `json:"max_wasm_stack_bytes"`
 	// MaxFuel limits deterministic WebAssembly instruction work during one
 	// evaluation.
 	MaxFuel uint64 `json:"max_fuel"`

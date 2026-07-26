@@ -221,6 +221,7 @@ Engine ceilings define the largest request the process will accept.
 | Concern | Engine ceiling | Per-request override |
 | --- | --- | --- |
 | Guest memory | `MaxMemoryBytes` | None |
+| Compiled WASM call stack | `MaxWasmStackBytes` | None |
 | WASM instruction work | `MaxFuel` | `MaxFuel` |
 | Source bytes | `MaxSourceBytes` | `MaxSourceBytes` |
 | Rendered bytes | `MaxOutputBytes` | `MaxOutputBytes` |

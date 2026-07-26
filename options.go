@@ -32,6 +32,8 @@ type engineOptions struct {
 // every engine using it has been closed.
 type CompilationCache struct {
 	inner     wazero.CompilationCache
+	mu        sync.Mutex
+	stackSize uint64
 	closeOnce sync.Once
 	closeErr  error
 }
@@ -161,7 +163,7 @@ func newEngineOptions(options []Option) (engineOptions, error) {
 	return resolved, nil
 }
 
-func (o engineOptions) runtimeConfig() wazero.RuntimeConfig {
+func (o engineOptions) runtimeConfig(maxWasmStackBytes uint64) (wazero.RuntimeConfig, error) {
 	var config wazero.RuntimeConfig
 	if o.interpreter {
 		config = wazero.NewRuntimeConfigInterpreter()
@@ -169,7 +171,22 @@ func (o engineOptions) runtimeConfig() wazero.RuntimeConfig {
 		config = wazero.NewRuntimeConfig()
 	}
 	if o.cache != nil {
+		o.cache.mu.Lock()
+		if o.cache.stackSize != 0 && o.cache.stackSize != maxWasmStackBytes {
+			configured := o.cache.stackSize
+			o.cache.mu.Unlock()
+			return nil, &InvalidRequestError{
+				Field: "compilation cache",
+				Err: fmt.Errorf(
+					"already uses MaxWasmStackBytes %d, cannot reuse with %d",
+					configured,
+					maxWasmStackBytes,
+				),
+			}
+		}
+		o.cache.stackSize = maxWasmStackBytes
+		o.cache.mu.Unlock()
 		config = config.WithCompilationCache(o.cache.inner)
 	}
-	return config
+	return config.WithWasmStackLimitBytes(maxWasmStackBytes), nil
 }

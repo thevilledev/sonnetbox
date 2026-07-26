@@ -63,6 +63,7 @@ func TestPolicyFlagsNarrowTheDefaults(t *testing.T) {
 	cfg, err := parseArgs([]string{
 		"--max-fuel", "1000000",
 		"--max-memory", "16MiB",
+		"--max-wasm-stack", "128MiB",
 		"--max-imports", "3",
 		"--max-output-bytes", "4KiB",
 		"--max-trace-bytes=1KiB",
@@ -78,6 +79,7 @@ func TestPolicyFlagsNarrowTheDefaults(t *testing.T) {
 	}
 	if policy.MaxFuel != 1_000_000 ||
 		policy.MaxMemoryBytes != 16<<20 ||
+		policy.MaxWasmStackBytes != 128<<20 ||
 		policy.MaxImports != 3 ||
 		policy.MaxOutputBytes != 4<<10 ||
 		policy.MaxTraceBytes != 1<<10 ||

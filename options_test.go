@@ -31,6 +31,31 @@ func TestCompilationCacheIsReusedAcrossEngines(t *testing.T) {
 	}
 }
 
+func TestCompilationCacheRejectsDifferentWasmStackLimits(t *testing.T) {
+	cache := NewCompilationCache()
+	t.Cleanup(func() {
+		if err := cache.Close(context.Background()); err != nil {
+			t.Errorf("close cache: %v", err)
+		}
+	})
+
+	engine, err := NewEngine(context.Background(), EngineConfig{}, WithCompilationCache(cache))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = NewEngine(context.Background(), EngineConfig{
+		MaxWasmStackBytes: defaultConfig.MaxWasmStackBytes + 1,
+	}, WithCompilationCache(cache))
+	var invalid *InvalidRequestError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("NewEngine() error = %T: %v, want InvalidRequestError", err, err)
+	}
+}
+
 func TestCompilationCacheDirPersistsAcrossEngines(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "guest-cache")
 	cache, err := NewCompilationCacheDir(dir)
@@ -93,7 +118,11 @@ func TestCompilationCacheCloseIsIdempotent(t *testing.T) {
 }
 
 func TestInterpreterOptionEvaluates(t *testing.T) {
-	engine, err := NewEngine(context.Background(), EngineConfig{}, WithInterpreter())
+	engine, err := NewEngine(
+		context.Background(),
+		EngineConfig{MaxWasmStackBytes: 1},
+		WithInterpreter(),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

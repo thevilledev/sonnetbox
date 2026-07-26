@@ -4,7 +4,7 @@ go 1.25.12
 
 require (
 	github.com/google/go-jsonnet v0.22.0
-	github.com/thevilledev/wazero v0.0.0-20260726091324-2a752f24e7e1
+	github.com/thevilledev/wazero v0.0.0-20260726173356-c7767e4890ec
 )
 
 require (

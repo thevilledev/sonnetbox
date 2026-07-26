@@ -7,6 +7,8 @@ RACE_TIMEOUT ?= 3m
 RACE_TESTS ?= ^(TestConcurrencyLimitHonorsContext|TestFreshInstancesAndConcurrentEvaluation)$$
 FUZZ_TIME ?= 10s
 COVERAGE_MIN ?= 70
+JSONNET_SUITE_DIR ?= ../jsonnet/test_suite
+GO_JSONNET_VERSION = $(strip $(shell $(GO) list -m -f '{{.Version}}' github.com/google/go-jsonnet))
 BUILD_DIR := build
 COVERAGE_PROFILE := $(BUILD_DIR)/coverage.out
 WASM := internal/guestblob/sonnetbox.wasm
@@ -17,13 +19,22 @@ IMAGE ?= ghcr.io/thevilledev/sonnetbox
 VERSION ?= dev
 DOCKER ?= docker
 
-.PHONY: cli docker fmt fmt-check lint mod-check test coverage race fuzz \
-	fuzz-smoke no-cgo wasm wasm-check check ci
+.PHONY: cli conformance docker fmt fmt-check lint mod-check test coverage race \
+	fuzz fuzz-smoke no-cgo wasm wasm-check check ci
 
 cli:
 	@mkdir -p $(BUILD_DIR)
 	CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -trimpath \
 		-o $(BUILD_DIR)/sonnetbox ./cmd/sonnetbox
+
+conformance: cli
+	@mkdir -p $(BUILD_DIR)/conformance/bin
+	GOBIN=$(abspath $(BUILD_DIR)/conformance/bin) GOTOOLCHAIN=local \
+		$(GO) install github.com/google/go-jsonnet/cmd/jsonnet@$(GO_JSONNET_VERSION)
+	JSONNET_SUITE_DIR=$(abspath $(JSONNET_SUITE_DIR)) \
+		SONNETBOX_BIN=$(abspath $(BUILD_DIR)/sonnetbox) \
+		GO_JSONNET_BIN=$(abspath $(BUILD_DIR)/conformance/bin/jsonnet) \
+		bash test/conformance/jsonnet-suite.sh
 
 docker:
 	$(DOCKER) build \

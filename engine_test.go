@@ -143,6 +143,12 @@ func TestEngineConfigValidation(t *testing.T) {
 			config: EngineConfig{MaxFuel: hardCeilings.MaxFuel + 1},
 		},
 		{
+			name: "WASM stack ceiling",
+			config: EngineConfig{
+				MaxWasmStackBytes: hardCeilings.MaxWasmStackBytes + 1,
+			},
+		},
+		{
 			name:   "request ceiling",
 			config: EngineConfig{MaxHostRequestBytes: hardCeilings.MaxHostRequestBytes + 1},
 		},
@@ -170,6 +176,21 @@ func TestEngineConfigValidation(t *testing.T) {
 				t.Fatalf("expected InvalidRequestError, got %T: %v", err, err)
 			}
 		})
+	}
+}
+
+func TestLowWasmStackLimitReturnsGuestTrap(t *testing.T) {
+	engine := newTestEngine(t, EngineConfig{
+		MaxFuel:           1_000_000_000,
+		MaxStack:          hardCeilings.MaxStack,
+		MaxWasmStackBytes: 1 << 20,
+	})
+	_, err := engine.Evaluate(context.Background(), Request{
+		Source: `local f(n) = if n <= 0 then 0 else 1 + f(n - 1); f(1000)`,
+	})
+	var trap *GuestTrapError
+	if !errors.As(err, &trap) {
+		t.Fatalf("Evaluate() error = %T: %v, want GuestTrapError", err, err)
 	}
 }
 
@@ -328,6 +349,9 @@ func TestEngineConfigRoundTripsThroughJSON(t *testing.T) {
 	}
 	if !strings.Contains(string(encoded), `"max_imports":11`) {
 		t.Fatalf("encoded policy is missing a stable field name: %s", encoded)
+	}
+	if !strings.Contains(string(encoded), `"max_wasm_stack_bytes":50000000`) {
+		t.Fatalf("encoded policy is missing max_wasm_stack_bytes: %s", encoded)
 	}
 	var decoded EngineConfig
 	if err := json.Unmarshal(encoded, &decoded); err != nil {

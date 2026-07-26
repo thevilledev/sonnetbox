@@ -196,6 +196,7 @@ policy can only narrow what sonnetbox already permits:
 
 ```sh
 sonnetbox --max-fuel 20000000 --max-memory 32MiB untrusted.jsonnet
+sonnetbox --max-wasm-stack 128MiB deeply-recursive.jsonnet
 sonnetbox --policy ./sandbox-policy.json untrusted.jsonnet
 ```
 
@@ -310,6 +311,7 @@ defaults:
 | Ceiling | Default |
 | --- | ---: |
 | Guest linear memory | 128 MiB |
+| Compiled WASM call stack | 50,000,000 bytes |
 | Deterministic WASM fuel | 100,000,000 units |
 | Source / one import | 256 KiB each |
 | Rendered output | 1 MiB |
@@ -322,8 +324,9 @@ defaults:
 | Concurrent evaluations | 4 |
 
 Invalid values and values above the library's hard ceilings are rejected.
-`Request.Limits` can lower every per-evaluation ceiling except memory and
-concurrency; it can never raise the engine policy. Fuel deterministically
+`Request.Limits` can lower every per-evaluation ceiling except memory, the
+compiled WASM call stack, and concurrency; it can never raise the engine
+policy. Fuel deterministically
 bounds guest instruction work, while a context deadline remains the wall-clock
 backstop for host callbacks and evaluation. Evaluations waiting for a
 concurrency slot also honor cancellation.
