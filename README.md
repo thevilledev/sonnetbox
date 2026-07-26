@@ -6,7 +6,8 @@
 > deterministic `experimental/fuel` metering this sandbox needs. The fork
 > declares its own module path so that `go install` and ordinary module
 > resolution work; a `replace` directive would be ignored for anyone
-> depending on `sonnetbox`.
+> depending on `sonnetbox`. [docs/wazero-fork.md](docs/wazero-fork.md) records
+> why upstreaming is not a path and what an optional upstream build would cost.
 
 [![CI](https://github.com/thevilledev/sonnetbox/actions/workflows/ci.yml/badge.svg)](https://github.com/thevilledev/sonnetbox/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/thevilledev/sonnetbox.svg)](https://pkg.go.dev/github.com/thevilledev/sonnetbox)
