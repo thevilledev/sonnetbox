@@ -214,7 +214,7 @@ func TestRunDefaultFileWorkspaceConfinesImports(t *testing.T) {
 	writeTestFile(t, main, `import "../secret.libsonnet"`)
 
 	status, _, stderr := run(context.Background(), t, []string{main}, "")
-	if status != 1 || !strings.Contains(stderr, "denied") {
+	if status != exitDenied || !strings.Contains(stderr, "denied") {
 		t.Fatalf("Run() = status %d, stderr %q; want denied import", status, stderr)
 	}
 
@@ -235,7 +235,7 @@ func TestRunStdinImportsRequireRoot(t *testing.T) {
 	source := `import "value.libsonnet"`
 
 	status, _, stderr := run(context.Background(), t, []string{"-"}, source)
-	if status != 1 || !strings.Contains(stderr, "denied") {
+	if status != exitDenied || !strings.Contains(stderr, "denied") {
 		t.Fatalf("Run() = status %d, stderr %q; want denied import", status, stderr)
 	}
 
@@ -276,7 +276,10 @@ func TestRunRejectsEscapingInputAndSymlink(t *testing.T) {
 		"--root", root,
 		"escape.jsonnet",
 	}, "")
-	if status != 1 || !strings.Contains(stderr, "path escapes") {
+	// os.Root refuses to follow the link without an exported sentinel error, so
+	// the importer reports it as a failure to serve the path rather than a
+	// policy denial. Either way the link is never followed.
+	if status != exitFailure || !strings.Contains(stderr, "path escapes") {
 		t.Fatalf("Run() = status %d, stderr %q; want escaping symlink failure", status, stderr)
 	}
 }
@@ -351,14 +354,14 @@ func TestRunOutputFileTraceLimitsAndCancellation(t *testing.T) {
 	status, _, stderr = run(context.Background(), t, []string{
 		"-e", "--timeout", "1ns", `std.range(1, 1000000)`,
 	}, "")
-	if status != 1 || !strings.Contains(stderr, "canceled") {
+	if status != exitCanceled || !strings.Contains(stderr, "canceled") {
 		t.Fatalf("timed Run() = status %d, stderr %q", status, stderr)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	status, _, stderr = run(ctx, t, []string{"-e", "1"}, "")
-	if status != 1 || !strings.Contains(stderr, "canceled") {
+	if status != exitCanceled || !strings.Contains(stderr, "canceled") {
 		t.Fatalf("canceled Run() = status %d, stderr %q", status, stderr)
 	}
 }

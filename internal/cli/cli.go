@@ -49,6 +49,7 @@ type config struct {
 	printPolicy         bool
 	cacheDir            string
 	noCache             bool
+	errorFormat         string
 	help                bool
 	version             bool
 }
@@ -64,39 +65,39 @@ func Run(
 ) int {
 	cfg, err := parseArgs(args)
 	if err != nil {
+		// A usage mistake is a human problem, so it always gets the human form.
 		_, _ = fmt.Fprintf(stderr, "sonnetbox: %v\n\n", err)
 		writeUsage(stderr)
-		return 1
+		return exitFailure
 	}
 	if cfg.help {
 		writeUsage(stdout)
-		return 0
+		return exitSuccess
 	}
 	if cfg.version {
 		writeVersion(stdout)
-		return 0
+		return exitSuccess
 	}
 	if cfg.printPolicy {
 		if err := writePolicy(stdout, cfg); err != nil {
-			_, _ = fmt.Fprintf(stderr, "sonnetbox: %v\n", err)
-			return 1
+			return reportError(stderr, cfg.errorFormat, err)
 		}
-		return 0
+		return exitSuccess
 	}
 	if err := execute(ctx, cfg, stdin, stdout, stderr); err != nil {
-		_, _ = fmt.Fprintf(stderr, "sonnetbox: %v\n", err)
-		return 1
+		return reportError(stderr, cfg.errorFormat, err)
 	}
-	return 0
+	return exitSuccess
 }
 
 func parseArgs(args []string) (config, error) {
 	cfg := config{
-		timeout: defaultTimeout,
-		extVars: make(map[string]string),
-		extCode: make(map[string]string),
-		tlaVars: make(map[string]string),
-		tlaCode: make(map[string]string),
+		timeout:     defaultTimeout,
+		errorFormat: errorFormatText,
+		extVars:     make(map[string]string),
+		extCode:     make(map[string]string),
+		tlaVars:     make(map[string]string),
+		tlaCode:     make(map[string]string),
 	}
 	var positional []string
 	options := true
@@ -234,6 +235,18 @@ func parseArgs(args []string) (config, error) {
 			cfg.cacheDir = value
 		case "--no-cache":
 			cfg.noCache = true
+		case "--error-format":
+			value, err := next()
+			if err != nil {
+				return config{}, err
+			}
+			if value != errorFormatText && value != errorFormatJSON {
+				return config{}, fmt.Errorf(
+					"invalid error format %q: want %q or %q",
+					value, errorFormatText, errorFormatJSON,
+				)
+			}
+			cfg.errorFormat = value
 		default:
 			handled, err := applyPolicyFlag(&cfg, name, next)
 			if err != nil {
@@ -697,8 +710,16 @@ Guest compilation cache (compiled code, keep it private to this user):
       --cache-dir <dir>       Cache location (default: user cache directory)
       --no-cache              Compile the guest on every run
 
+Diagnostics:
+      --error-format <format> Report failures as text (default) or json
+
 Other:
   -h, --help                  Show this help
       --version               Show Sonnetbox, Jsonnet, and ABI versions
-`, policyUsage())
+
+Exit status: %d success, %d usage or host failure, %d Jsonnet error,
+%d exhausted budget, %d denied import, %d canceled or timed out.
+`, policyUsage(),
+		exitSuccess, exitFailure, exitEvaluation,
+		exitLimit, exitDenied, exitCanceled)
 }

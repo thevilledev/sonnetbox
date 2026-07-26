@@ -218,7 +218,7 @@ func TestRunHonorsALoweredCeiling(t *testing.T) {
 	status, _, stderr := run(context.Background(), t, []string{
 		"--max-output-bytes", "8", "-e", `{a: "a long enough value to exceed eight bytes"}`,
 	}, "")
-	if status != 1 || !strings.Contains(stderr, "limit exceeded") {
+	if status != exitLimit || !strings.Contains(stderr, "limit exceeded") {
 		t.Fatalf("Run() = status %d, stderr %q", status, stderr)
 	}
 }
