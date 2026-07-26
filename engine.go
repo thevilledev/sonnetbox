@@ -138,6 +138,11 @@ func newEngine(
 	if ctx == nil {
 		return nil, &InvalidRequestError{Field: "context", Err: errors.New("context is nil")}
 	}
+	// Compilation and the ABI probe both run under this context. Reporting the
+	// cancellation here keeps callers from seeing it as a guest ABI failure.
+	if err := ctx.Err(); err != nil {
+		return nil, &CancellationError{Err: err}
+	}
 	if runtimeConfig == nil {
 		return nil, &InvalidRequestError{
 			Field: "runtime config",

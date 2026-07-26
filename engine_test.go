@@ -173,6 +173,23 @@ func TestEngineConfigValidation(t *testing.T) {
 	}
 }
 
+func TestNewEngineReportsAnAlreadyCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	engine, err := NewEngine(ctx, EngineConfig{})
+	if err == nil {
+		_ = engine.Close(context.Background())
+		t.Fatal("NewEngine() error = nil for a canceled context")
+	}
+	var canceled *CancellationError
+	if !errors.As(err, &canceled) {
+		t.Fatalf("expected CancellationError, got %T: %v", err, err)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected the cancellation cause to be preserved, got %v", err)
+	}
+}
+
 func TestPolicySurfaceIsDiscoverable(t *testing.T) {
 	defaults := DefaultEngineConfig()
 	if defaults != defaultConfig {
