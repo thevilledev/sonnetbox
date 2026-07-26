@@ -6,6 +6,8 @@ TEST_TIMEOUT ?= 5m
 RACE_TIMEOUT ?= 3m
 RACE_TESTS ?= ^(TestConcurrencyLimitHonorsContext|TestFreshInstancesAndConcurrentEvaluation)$$
 FUZZ_TIME ?= 10s
+BENCH_TIME ?= 5x
+BENCH_TIMEOUT ?= 20m
 COVERAGE_MIN ?= 70
 JSONNET_SUITE_DIR ?= ../jsonnet/test_suite
 GO_JSONNET_VERSION = $(strip $(shell $(GO) list -m -f '{{.Version}}' github.com/google/go-jsonnet))
@@ -19,8 +21,12 @@ IMAGE ?= ghcr.io/thevilledev/sonnetbox
 VERSION ?= dev
 DOCKER ?= docker
 
-.PHONY: cli conformance docker fmt fmt-check lint mod-check test coverage race \
-	fuzz fuzz-smoke no-cgo wasm wasm-check check ci
+.PHONY: bench cli conformance conformance-suite docker fmt fmt-check lint \
+	mod-check test coverage race fuzz fuzz-smoke no-cgo wasm wasm-check check ci
+
+bench:
+	CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) test -run='^$$' -bench=. \
+		-benchtime=$(BENCH_TIME) -timeout=$(BENCH_TIMEOUT) .
 
 cli:
 	@mkdir -p $(BUILD_DIR)

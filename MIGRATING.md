@@ -213,6 +213,35 @@ Benchmark representative files, imports, and capabilities. Tiny snippets
 exaggerate fixed sandbox overhead; large manifestations can instead be
 dominated by Jsonnet and JSON rendering.
 
+`make bench` runs the repository benchmarks. These figures come from one
+darwin/arm64 laptop and exist to show the shape of the costs, not to promise
+numbers on your hardware:
+
+| Benchmark | Time | What it tells you |
+| --- | ---: | --- |
+| `NewEngineCold` | 2.2 s | Compiling the guest, paid once per process |
+| `NewEngineCached` | 67 ms | The same start with `NewCompilationCacheDir` |
+| `NewEngineInterpreter` | 218 ms | `WithInterpreter`, no compilation |
+| `EvaluateSnippet` | 19 ms | Fixed per-evaluation cost: fresh guest, one exchange |
+| `EvaluateInterpreterSnippet` | 110 ms | The same evaluation without the compiler |
+| `EvaluateImports` | 30 ms | 16 nested imports, each a host callback |
+| `EvaluateCapability` | 24 ms | 32 native calls in one evaluation |
+| `EvaluateLargeManifest` | 1.3 s | 600 objects rendered to 128 KB of JSON |
+
+Three conclusions matter for a migration. Engine creation dominates
+everything, so create one engine per policy profile and keep it. The
+per-evaluation floor is tens of milliseconds, so an in-process go-jsonnet VM
+stays far cheaper for trusted input and the difference is the price of the
+boundary. And the interpreter is the right trade only for a single evaluation,
+because it starts about ten times faster but evaluates several times slower.
+
+Instruction cost is not proportional to output size. The `%` operator and
+`std.format` are markedly more expensive under the guest than string
+concatenation: the manifest above consumes roughly 1.1 billion fuel units with
+`+` and would need more than twenty times that with `%`. Size `MaxFuel` from
+`Result.Stats.FuelConsumed` on representative programs rather than from output
+bytes.
+
 ## Policy mapping
 
 Engine ceilings define the largest request the process will accept.
