@@ -21,8 +21,9 @@ import (
 )
 
 const (
-	defaultTimeout        = 5 * time.Second
-	defaultMaxSourceBytes = 256 << 10
+	defaultTimeout = 5 * time.Second
+	// usageColumn aligns flag descriptions in the help text.
+	usageColumn = 30
 )
 
 var releaseVersion string
@@ -37,13 +38,17 @@ type config struct {
 	stream              bool
 	stringOutput        bool
 	omitTrailingNewline bool
-	maxStack            int
 	extVars             map[string]string
 	extCode             map[string]string
 	tlaVars             map[string]string
 	tlaCode             map[string]string
 	root                string
 	timeout             time.Duration
+	policyFile          string
+	policyOverrides     []policyOverride
+	printPolicy         bool
+	cacheDir            string
+	noCache             bool
 	help                bool
 	version             bool
 }
@@ -69,6 +74,13 @@ func Run(
 	}
 	if cfg.version {
 		writeVersion(stdout)
+		return 0
+	}
+	if cfg.printPolicy {
+		if err := writePolicy(stdout, cfg); err != nil {
+			_, _ = fmt.Fprintf(stderr, "sonnetbox: %v\n", err)
+			return 1
+		}
 		return 0
 	}
 	if err := execute(ctx, cfg, stdin, stdout, stderr); err != nil {
@@ -161,7 +173,10 @@ func parseArgs(args []string) (config, error) {
 			if err != nil || stack < 1 {
 				return config{}, fmt.Errorf("invalid max stack %q", value)
 			}
-			cfg.maxStack = stack
+			cfg.policyOverrides = append(
+				cfg.policyOverrides,
+				func(policy *sonnetbox.EngineConfig) { policy.MaxStack = stack },
+			)
 		case "-V", "--ext-str":
 			if err := parseBinding(next, cfg.extVars); err != nil {
 				return config{}, fmt.Errorf("external string: %w", err)
@@ -197,12 +212,43 @@ func parseArgs(args []string) (config, error) {
 				return config{}, fmt.Errorf("invalid timeout %q: must be a positive duration", value)
 			}
 			cfg.timeout = timeout
+		case "--policy":
+			value, err := next()
+			if err != nil {
+				return config{}, err
+			}
+			if value == "" {
+				return config{}, errors.New("policy file is empty")
+			}
+			cfg.policyFile = value
+		case "--print-policy":
+			cfg.printPolicy = true
+		case "--cache-dir":
+			value, err := next()
+			if err != nil {
+				return config{}, err
+			}
+			if value == "" {
+				return config{}, errors.New("cache directory is empty")
+			}
+			cfg.cacheDir = value
+		case "--no-cache":
+			cfg.noCache = true
 		default:
-			return config{}, fmt.Errorf("unrecognized option %q", arg)
+			handled, err := applyPolicyFlag(&cfg, name, next)
+			if err != nil {
+				return config{}, err
+			}
+			if !handled {
+				return config{}, fmt.Errorf("unrecognized option %q", arg)
+			}
 		}
 	}
 
-	if cfg.help || cfg.version {
+	if cfg.cacheDir != "" && cfg.noCache {
+		return config{}, errors.New("--cache-dir and --no-cache cannot be combined")
+	}
+	if cfg.help || cfg.version || cfg.printPolicy {
 		return cfg, nil
 	}
 	if len(positional) != 1 {
@@ -247,7 +293,11 @@ func execute(
 	if ctx == nil {
 		return errors.New("context is nil")
 	}
-	importer, filename, source, err := prepareInput(ctx, cfg, stdin)
+	policy, err := resolvePolicy(cfg)
+	if err != nil {
+		return err
+	}
+	importer, filename, source, err := prepareInput(ctx, cfg, stdin, policy.MaxSourceBytes)
 	if err != nil {
 		return err
 	}
@@ -257,7 +307,16 @@ func execute(
 		}()
 	}
 
-	engine, err := sonnetbox.NewEngine(ctx, sonnetbox.EngineConfig{MaxStack: cfg.maxStack})
+	cache, err := openCompilationCache(cfg)
+	if err != nil {
+		return err
+	}
+	var options []sonnetbox.Option
+	if cache != nil {
+		defer cache.Close(context.WithoutCancel(ctx)) //nolint:errcheck // the evaluation result is authoritative.
+		options = append(options, sonnetbox.WithCompilationCache(cache))
+	}
+	engine, err := sonnetbox.NewEngine(ctx, policy, options...)
 	if err != nil {
 		return fmt.Errorf("initialize evaluator: %w", err)
 	}
@@ -309,13 +368,14 @@ func prepareInput(
 	ctx context.Context,
 	cfg config,
 	stdin io.Reader,
+	maxSourceBytes uint32,
 ) (*sonnetbox.WorkspaceImporter, string, string, error) {
 	if cfg.exec {
 		importer, err := openWorkspace(cfg.root, cfg.jpaths)
 		return importer, "<cmdline>", cfg.input, err
 	}
 	if cfg.input == "-" {
-		source, err := readBounded(ctx, stdin, defaultMaxSourceBytes)
+		source, err := readBounded(ctx, stdin, int64(maxSourceBytes))
 		if err != nil {
 			return nil, "", "", err
 		}
@@ -603,7 +663,7 @@ func writeVersion(output io.Writer) {
 }
 
 func writeUsage(output io.Writer) {
-	_, _ = fmt.Fprintln(output, `Usage: sonnetbox [options] <filename|-|expression>
+	_, _ = fmt.Fprintf(output, `Usage: sonnetbox [options] <filename|-|expression>
 
 Evaluate Jsonnet in a fresh WebAssembly sandbox.
 
@@ -626,9 +686,19 @@ Output:
   -y, --yaml-stream           Write a stream of JSON documents
   -S, --string                Manifest top-level strings as plain text
       --no-trailing-newline   Omit the normal trailing newline
-  -s, --max-stack <frames>    Set the evaluator stack ceiling
+
+Sandbox policy (sizes accept suffixes such as 512KiB or 16MB):
+      --policy <file>         Load ceilings from a JSON policy file
+      --print-policy          Print the effective policy and exit
+  -s, --max-stack <frames>    Evaluator stack ceiling
+%s
+
+Guest compilation cache (compiled code, keep it private to this user):
+      --cache-dir <dir>       Cache location (default: user cache directory)
+      --no-cache              Compile the guest on every run
 
 Other:
   -h, --help                  Show this help
-      --version               Show Sonnetbox, Jsonnet, and ABI versions`)
+      --version               Show Sonnetbox, Jsonnet, and ABI versions
+`, policyUsage())
 }

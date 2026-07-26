@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/go-jsonnet"
+	"github.com/thevilledev/sonnetbox"
 )
 
 func TestParseArgs(t *testing.T) {
@@ -341,7 +342,8 @@ func TestRunOutputFileTraceLimitsAndCancellation(t *testing.T) {
 		t.Fatalf("output file = %q", got)
 	}
 
-	status, _, stderr = run(context.Background(), t, []string{"-"}, strings.Repeat("x", defaultMaxSourceBytes+1))
+	oversized := int(sonnetbox.DefaultEngineConfig().MaxSourceBytes) + 1
+	status, _, stderr = run(context.Background(), t, []string{"-"}, strings.Repeat("x", oversized))
 	if status != 1 || !strings.Contains(stderr, "exceeds source limit") {
 		t.Fatalf("oversized Run() = status %d, stderr %q", status, stderr)
 	}
