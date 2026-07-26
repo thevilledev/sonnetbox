@@ -77,6 +77,14 @@ func Ceilings() EngineConfig {
 	return hardCeilings
 }
 
+// Normalize resolves zero-valued fields to their defaults and validates every
+// field, returning the configuration an Engine would apply. NewEngine performs
+// the same work, so Normalize lets a caller check or display an
+// operator-supplied policy without paying to compile the guest.
+func (c EngineConfig) Normalize() (EngineConfig, error) {
+	return normalizeConfig(c)
+}
+
 // Engine owns a compiled guest module and instantiates a fresh guest for every
 // evaluation. An Engine is safe for concurrent use and must be closed when it
 // is no longer needed.

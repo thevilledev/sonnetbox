@@ -208,6 +208,25 @@ func TestEngineConfigReportsEffectivePolicy(t *testing.T) {
 	}
 }
 
+func TestNormalizeResolvesAndValidatesWithoutAnEngine(t *testing.T) {
+	effective, err := EngineConfig{MaxImports: 9}.Normalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if effective.MaxImports != 9 {
+		t.Fatalf("MaxImports = %d, want 9", effective.MaxImports)
+	}
+	if effective.MaxFuel != defaultConfig.MaxFuel {
+		t.Fatalf("MaxFuel = %d, want the default %d", effective.MaxFuel, defaultConfig.MaxFuel)
+	}
+
+	_, err = EngineConfig{MaxFuel: hardCeilings.MaxFuel + 1}.Normalize()
+	var invalid *InvalidRequestError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("expected InvalidRequestError, got %T: %v", err, err)
+	}
+}
+
 func TestEngineConfigRoundTripsThroughJSON(t *testing.T) {
 	original := DefaultEngineConfig()
 	original.MaxImports = 11
