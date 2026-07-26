@@ -24,6 +24,8 @@ const (
 	defaultTimeout = 5 * time.Second
 	// usageColumn aligns flag descriptions in the help text.
 	usageColumn = 30
+	// maxMountAttempts bounds the search for a free virtual library-path name.
+	maxMountAttempts = 100
 )
 
 var releaseVersion string
@@ -411,23 +413,87 @@ func openWorkspace(root string, jpaths []string) (*sonnetbox.WorkspaceImporter, 
 		}
 		return nil, nil
 	}
-	libraryPaths := make([]string, 0, len(jpaths))
-	for _, jpath := range jpaths {
-		virtual, err := pathWithinRoot(root, jpath)
-		if err != nil {
-			return nil, fmt.Errorf("JPath %q: %w", jpath, err)
-		}
-		libraryPaths = append(libraryPaths, virtual)
-	}
-	options := []sonnetbox.WorkspaceOption(nil)
-	if len(libraryPaths) > 0 {
-		options = append(options, sonnetbox.WithLibraryPaths(libraryPaths...))
+	options, err := searchOptions(root, jpaths)
+	if err != nil {
+		return nil, err
 	}
 	importer, err := sonnetbox.NewWorkspaceImporter(root, options...)
 	if err != nil {
 		return nil, err
 	}
 	return importer, nil
+}
+
+// searchOptions maps every -J path to one workspace option in declaration
+// order, so library paths and search roots share a single precedence list and
+// match go-jsonnet FileImporter search order.
+//
+// A path inside the workspace root becomes a library path. A path outside it
+// becomes a separate search root grant, which is how an absolute or
+// parent-directory JPath from a go-jsonnet FileImporter is expressed without
+// widening the workspace root itself.
+func searchOptions(root string, jpaths []string) ([]sonnetbox.WorkspaceOption, error) {
+	options := make([]sonnetbox.WorkspaceOption, 0, len(jpaths))
+	taken := make(map[string]struct{}, len(jpaths))
+	for _, jpath := range jpaths {
+		if virtual, err := pathWithinRoot(root, jpath); err == nil {
+			options = append(options, sonnetbox.WithLibraryPaths(virtual))
+			continue
+		}
+		mount, err := mountName(root, jpath, taken)
+		if err != nil {
+			return nil, fmt.Errorf("JPath %q: %w", jpath, err)
+		}
+		taken[mount] = struct{}{}
+		options = append(options, sonnetbox.WithSearchRoot(mount, jpath))
+	}
+	return options, nil
+}
+
+// mountName derives a stable virtual name for an out-of-root JPath from its
+// last path element, numbering repeats in declaration order and skipping any
+// name the workspace root already uses.
+func mountName(root string, jpath string, taken map[string]struct{}) (string, error) {
+	absolute, err := filepath.Abs(jpath)
+	if err != nil {
+		return "", err
+	}
+	base := sanitizeMountName(filepath.Base(absolute))
+	if base == "" {
+		base = "jpath"
+	}
+	for suffix := 1; suffix <= maxMountAttempts; suffix++ {
+		candidate := base
+		if suffix > 1 {
+			candidate = fmt.Sprintf("%s-%d", base, suffix)
+		}
+		if _, exists := taken[candidate]; exists {
+			continue
+		}
+		if _, err := os.Lstat(filepath.Join(root, candidate)); err == nil {
+			continue
+		}
+		return candidate, nil
+	}
+	return "", errors.New("no free virtual name for the library path")
+}
+
+// sanitizeMountName reduces one host path element to a name the importer
+// accepts as a single virtual path segment.
+func sanitizeMountName(element string) string {
+	var builder strings.Builder
+	for _, symbol := range element {
+		switch {
+		case symbol >= 'a' && symbol <= 'z',
+			symbol >= 'A' && symbol <= 'Z',
+			symbol >= '0' && symbol <= '9',
+			symbol == '-', symbol == '_', symbol == '.':
+			builder.WriteRune(symbol)
+		default:
+			builder.WriteRune('_')
+		}
+	}
+	return strings.Trim(builder.String(), ".")
 }
 
 func fileWorkspace(configuredRoot, input string) (string, string, error) {
@@ -683,7 +749,8 @@ Evaluate Jsonnet in a fresh WebAssembly sandbox.
 Input and imports:
   -e, --exec                  Treat the positional input as Jsonnet code
       --root <dir>            Grant a read-only import workspace
-  -J, --jpath <dir>           Add a library path beneath the workspace
+  -J, --jpath <dir>           Add a library path; one outside the workspace
+                              is granted as its own read-only root
       --timeout <duration>    Evaluation deadline (default 5s)
 
 Variables and arguments (name=value is required):

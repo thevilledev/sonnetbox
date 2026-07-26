@@ -205,6 +205,148 @@ func TestRunFileWorkspaceAndJPathPrecedence(t *testing.T) {
 	}
 }
 
+func TestRunGrantsJPathsOutsideTheWorkspaceRoot(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "apps", "main.jsonnet"), `import "choice.libsonnet"`)
+	writeTestFile(t, filepath.Join(root, "inside", "choice.libsonnet"), `"inside"`)
+	external := filepath.Join(t.TempDir(), "vendor")
+	writeTestFile(t, filepath.Join(external, "choice.libsonnet"), `"outside"`)
+
+	// A JPath outside the workspace root is granted its own read-only root
+	// instead of being refused, and shares one precedence list with in-root
+	// library paths so the last declaration wins, as in go-jsonnet.
+	for _, test := range []struct {
+		name  string
+		paths []string
+		want  string
+	}{
+		{name: "outside last", paths: []string{"inside", external}, want: "\"outside\"\n"},
+		{name: "inside last", paths: []string{external, "inside"}, want: "\"inside\"\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			args := []string{"--root", root}
+			for _, jpath := range test.paths {
+				args = append(args, "-J", jpath)
+			}
+			args = append(args, "apps/main.jsonnet")
+
+			vm := jsonnet.MakeVM()
+			vm.Importer(&jsonnet.FileImporter{JPaths: hostJPaths(root, test.paths)})
+			want, err := vm.EvaluateFile(filepath.Join(root, "apps", "main.jsonnet"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want != test.want {
+				t.Fatalf("go-jsonnet returned %q, want %q", want, test.want)
+			}
+
+			status, stdout, stderr := run(context.Background(), t, args, "")
+			if status != 0 || stderr != "" || stdout != want {
+				t.Fatalf(
+					"Run() = status %d, stdout %q, stderr %q; go-jsonnet = %q",
+					status, stdout, stderr, want,
+				)
+			}
+		})
+	}
+}
+
+func TestRunConfinesJPathsGrantedOutsideTheRoot(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "main.jsonnet"), `import "../secret.libsonnet"`)
+	external := filepath.Join(t.TempDir(), "lib")
+	writeTestFile(t, filepath.Join(external, "present.libsonnet"), `1`)
+	writeTestFile(t, filepath.Join(filepath.Dir(external), "secret.libsonnet"), `"secret"`)
+
+	// The grant covers the named directory only; its parent stays unreachable.
+	status, _, stderr := run(context.Background(), t, []string{
+		"--root", root,
+		"-J", external,
+		"main.jsonnet",
+	}, "")
+	if status != exitDenied || !strings.Contains(stderr, "denied") {
+		t.Fatalf("Run() = status %d, stderr %q; want denied import", status, stderr)
+	}
+}
+
+func TestSearchOptionsNamesOutOfRootJPathsDeterministically(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "vendor"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	parent := t.TempDir()
+	first := filepath.Join(parent, "one", "vendor")
+	second := filepath.Join(parent, "two", "vendor")
+	for _, directory := range []string{first, second} {
+		if err := os.MkdirAll(directory, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Repeated basenames are numbered in declaration order, and a name the
+	// workspace root already uses is skipped so no grant is shadowed.
+	if _, err := searchOptions(root, []string{first, second}); err != nil {
+		t.Fatalf("searchOptions() error = %v", err)
+	}
+	taken := make(map[string]struct{})
+	names := make([]string, 0, 2)
+	for _, directory := range []string{first, second} {
+		name, err := mountName(root, directory, taken)
+		if err != nil {
+			t.Fatal(err)
+		}
+		taken[name] = struct{}{}
+		names = append(names, name)
+	}
+	if names[0] != "vendor-2" || names[1] != "vendor-3" {
+		t.Fatalf("mount names = %q, want [vendor-2 vendor-3]", names)
+	}
+
+	if _, err := searchOptions(root, []string{filepath.Join(parent, "..")}); err != nil {
+		t.Fatalf("searchOptions() for an unnameable path error = %v", err)
+	}
+}
+
+func TestSanitizeMountName(t *testing.T) {
+	t.Parallel()
+
+	for input, want := range map[string]string{
+		"vendor":     "vendor",
+		"my libs":    "my_libs",
+		"a/b":        "a_b",
+		"..":         "",
+		".":          "",
+		".hidden":    "hidden",
+		"lib-1_2.v3": "lib-1_2.v3",
+	} {
+		if got := sanitizeMountName(input); got != want {
+			t.Errorf("sanitizeMountName(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+// hostJPaths converts CLI -J values into the host paths go-jsonnet expects, so
+// a differential check uses the same search order.
+func hostJPaths(root string, paths []string) []string {
+	hostPaths := make([]string, 0, len(paths))
+	for _, jpath := range paths {
+		if filepath.IsAbs(jpath) {
+			hostPaths = append(hostPaths, jpath)
+			continue
+		}
+		hostPaths = append(hostPaths, filepath.Join(root, jpath))
+	}
+	return hostPaths
+}
+
 func TestRunDefaultFileWorkspaceConfinesImports(t *testing.T) {
 	t.Parallel()
 
