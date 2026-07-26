@@ -109,21 +109,218 @@ func TestWorkspaceImporterRelativeAndLibraryResolution(t *testing.T) {
 }
 
 func TestWithLibraryPathsValidatesBeforeAppending(t *testing.T) {
-	config := workspaceConfig{libraryPaths: []string{"existing"}}
+	existing := []declaredSearchPath{{path: "existing"}}
+	config := workspaceConfig{searchPaths: slices.Clone(existing)}
 	if err := WithLibraryPaths("vendor", "overrides")(&config); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"existing", "vendor", "overrides"}
-	if !slices.Equal(config.libraryPaths, want) {
-		t.Fatalf("library paths = %q, want %q", config.libraryPaths, want)
+	want := []declaredSearchPath{
+		{path: "existing"},
+		{path: "vendor"},
+		{path: "overrides"},
+	}
+	if !slices.Equal(config.searchPaths, want) {
+		t.Fatalf("search paths = %v, want %v", config.searchPaths, want)
 	}
 
-	config = workspaceConfig{libraryPaths: []string{"existing"}}
+	config = workspaceConfig{searchPaths: slices.Clone(existing)}
 	if err := WithLibraryPaths("vendor", "../outside")(&config); err == nil {
 		t.Fatal("expected invalid library path to be rejected")
 	}
-	if !slices.Equal(config.libraryPaths, []string{"existing"}) {
-		t.Fatalf("failed option mutated library paths: %q", config.libraryPaths)
+	if !slices.Equal(config.searchPaths, existing) {
+		t.Fatalf("failed option mutated search paths: %v", config.searchPaths)
+	}
+}
+
+func TestWithSearchRootValidatesDeclarations(t *testing.T) {
+	config := workspaceConfig{}
+	if err := WithSearchRoot("stdlib", "/some/where")(&config); err != nil {
+		t.Fatal(err)
+	}
+	want := []declaredSearchPath{{mount: "stdlib", path: "/some/where"}}
+	if !slices.Equal(config.searchPaths, want) {
+		t.Fatalf("search paths = %v, want %v", config.searchPaths, want)
+	}
+
+	if err := WithSearchRoot("stdlib", "/elsewhere")(&config); err == nil {
+		t.Fatal("expected a duplicate search root name to be rejected")
+	}
+	if err := WithSearchRoot("stdlib", "")(&config); err == nil {
+		t.Fatal("expected an empty search root path to be rejected")
+	}
+	for _, invalid := range []string{"", "nested/name", "..", ".", "/abs", `back\slash`} {
+		if err := WithSearchRoot(invalid, "/some/where")(&config); err == nil {
+			t.Errorf("expected search root name %q to be rejected", invalid)
+		}
+	}
+	if !slices.Equal(config.searchPaths, want) {
+		t.Fatalf("failed option mutated search paths: %v", config.searchPaths)
+	}
+}
+
+func TestWorkspaceImporterSearchRootPrecedence(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, root, "apps/main.jsonnet", `{}`)
+	writeTestFile(t, root, "lib/shared.libsonnet", `{source: "in-root lib"}`)
+
+	first := t.TempDir()
+	writeTestFile(t, first, "shared.libsonnet", `{source: "first"}`)
+	writeTestFile(t, first, "only-first.libsonnet", `{source: "only first"}`)
+
+	second := t.TempDir()
+	writeTestFile(t, second, "shared.libsonnet", `{source: "second"}`)
+
+	importer, err := NewWorkspaceImporter(
+		root,
+		WithLibraryPaths("lib"),
+		WithSearchRoot("first", first),
+		WithSearchRoot("second", second),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := importer.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+
+	// Every declaration shares one precedence list, so the last one wins.
+	canonical, content, err := importer.Import(
+		context.Background(),
+		"apps/main.jsonnet",
+		"shared.libsonnet",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if canonical != "second/shared.libsonnet" || string(content) != `{source: "second"}` {
+		t.Fatalf("unexpected precedence winner: %q %q", canonical, content)
+	}
+
+	canonical, content, err = importer.Import(
+		context.Background(),
+		"apps/main.jsonnet",
+		"only-first.libsonnet",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if canonical != "first/only-first.libsonnet" || string(content) != `{source: "only first"}` {
+		t.Fatalf("unexpected fallback import: %q %q", canonical, content)
+	}
+}
+
+func TestWorkspaceImporterResolvesRelativeImportsInsideSearchRoot(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, root, "peer.libsonnet", `{source: "workspace root"}`)
+
+	external := t.TempDir()
+	writeTestFile(t, external, "pkg/entry.libsonnet", `{}`)
+	writeTestFile(t, external, "pkg/peer.libsonnet", `{source: "search root"}`)
+
+	importer, err := NewWorkspaceImporter(root, WithSearchRoot("ext", external))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := importer.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+
+	// A file found in a search root must resolve its own relative imports
+	// inside that root rather than falling back to the workspace root.
+	canonical, content, err := importer.Import(
+		context.Background(),
+		"ext/pkg/entry.libsonnet",
+		"./peer.libsonnet",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if canonical != "ext/pkg/peer.libsonnet" || string(content) != `{source: "search root"}` {
+		t.Fatalf("unexpected relative import: %q %q", canonical, content)
+	}
+
+	if _, _, err := importer.Import(
+		context.Background(),
+		"ext/pkg/entry.libsonnet",
+		"../../escape.libsonnet",
+	); !errors.Is(err, ErrImportDenied) {
+		t.Fatalf("search root traversal error = %v, want import denial", err)
+	}
+}
+
+func TestWorkspaceImporterSearchRootRejectsEscapingSymlink(t *testing.T) {
+	root := t.TempDir()
+	external := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "secret.jsonnet")
+	if err := os.WriteFile(outside, []byte(`"secret"`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(external, "escape.jsonnet")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	importer, err := NewWorkspaceImporter(root, WithSearchRoot("ext", external))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := importer.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	if _, content, err := importer.Import(
+		context.Background(),
+		"",
+		"escape.jsonnet",
+	); err == nil || len(content) != 0 {
+		t.Fatalf("escaping symlink was readable: content=%q err=%v", content, err)
+	}
+}
+
+func TestWorkspaceImporterSearchRootValidationAndClose(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, root, "vendor/lib.libsonnet", `1`)
+
+	if _, err := NewWorkspaceImporter(
+		root,
+		WithSearchRoot("vendor", t.TempDir()),
+	); err == nil {
+		t.Fatal("expected a search root colliding with the workspace root to be rejected")
+	}
+	if _, err := NewWorkspaceImporter(
+		root,
+		WithSearchRoot("missing", filepath.Join(t.TempDir(), "absent")),
+	); err == nil {
+		t.Fatal("expected a missing search root directory to be rejected")
+	}
+
+	external := t.TempDir()
+	writeTestFile(t, external, "lib.libsonnet", `2`)
+	importer, err := NewWorkspaceImporter(root, WithSearchRoot("ext", external))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := importer.Import(context.Background(), "", "lib.libsonnet"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := importer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := importer.Close(); err != nil {
+		t.Fatalf("second Close() error = %v", err)
+	}
+	// Close must release the search root as well as the workspace root.
+	if _, _, err := importer.Import(
+		context.Background(),
+		"",
+		"lib.libsonnet",
+	); err == nil || errors.Is(err, ErrImportDenied) {
+		t.Fatalf("closed search root import error = %v, want filesystem error", err)
 	}
 }
 
