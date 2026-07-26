@@ -106,8 +106,20 @@ type invocationState struct {
 // engine. Zero-valued config fields select documented defaults. The context
 // controls initialization and is not retained; callers must close the returned
 // Engine.
-func NewEngine(ctx context.Context, config EngineConfig) (*Engine, error) {
-	return newEngine(ctx, config, wazero.NewRuntimeConfig())
+//
+// Compiling the guest dominates this call. Processes that create engines
+// repeatedly, such as short-lived commands, should pass
+// [WithCompilationCache] to reuse compiled code.
+func NewEngine(
+	ctx context.Context,
+	config EngineConfig,
+	options ...Option,
+) (*Engine, error) {
+	resolved, err := newEngineOptions(options)
+	if err != nil {
+		return nil, err
+	}
+	return newEngine(ctx, config, resolved.runtimeConfig())
 }
 
 func newEngine(
