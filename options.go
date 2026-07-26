@@ -19,6 +19,7 @@ type engineOptions struct {
 	interpreter         bool
 	defaultImporter     Importer
 	defaultCapabilities map[string]Capability
+	observer            *Observer
 }
 
 // CompilationCache stores compiled guest code so that engines can skip

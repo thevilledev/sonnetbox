@@ -101,6 +101,7 @@ type Engine struct {
 	// without the lock.
 	defaultImporter     Importer
 	defaultCapabilities map[string]Capability
+	observer            *Observer
 }
 
 type invocationKey struct{}
@@ -182,6 +183,7 @@ func newEngine(
 		gate:                make(chan struct{}, effective.MaxConcurrentEvaluations),
 		defaultImporter:     options.defaultImporter,
 		defaultCapabilities: options.defaultCapabilities,
+		observer:            options.observer,
 	}
 	if err := e.instantiateHostModule(ctx); err != nil {
 		return nil, &ABIError{Err: fmt.Errorf("instantiate host ABI: %w", err)}
@@ -306,10 +308,20 @@ func (e *Engine) evaluate(
 	ctx context.Context,
 	request Request,
 	inputMode protocol.InputMode,
-) (Result, error) {
+) (result Result, err error) {
 	if ctx == nil {
 		return Result{}, &InvalidRequestError{Field: "context", Err: errors.New("context is nil")}
 	}
+	// Named results let one deferred hook observe every outcome, including the
+	// validation failures that never reach the guest.
+	filename := request.Filename
+	defer func() {
+		e.observeEvaluation(ctx, EvaluationEvent{
+			Filename: filename,
+			Stats:    result.Stats,
+			Err:      err,
+		})
+	}()
 	if err := ctx.Err(); err != nil {
 		return Result{}, &CancellationError{Err: err}
 	}
@@ -325,6 +337,7 @@ func (e *Engine) evaluate(
 	if err != nil {
 		return Result{}, err
 	}
+	filename = normalized.Filename
 
 	queueStarted := time.Now()
 	if err := e.acquire(ctx); err != nil {
@@ -587,8 +600,24 @@ func (e *Engine) resolveImport(
 	ctx context.Context,
 	state *invocationState,
 	raw []byte,
-) (uint32, []byte, error) {
+) (status uint32, payload []byte, err error) {
 	var request protocol.ImportRequest
+	// Named results let one deferred hook observe every outcome below without
+	// instrumenting each return.
+	var resolvedPath string
+	var servedBytes int
+	started := time.Now()
+	defer func() {
+		e.observeImport(ctx, ImportEvent{
+			ImportedFrom: request.ImportedFrom,
+			ImportedPath: request.ImportedPath,
+			ResolvedPath: resolvedPath,
+			Bytes:        servedBytes,
+			Duration:     time.Since(started),
+			Denied:       status == protocol.HostDenied,
+			Err:          err,
+		})
+	}()
 	if err := protocol.DecodeJSON(raw, &request); err != nil {
 		wrapped := &ABIError{Err: fmt.Errorf("decode import request: %w", err)}
 		return protocol.HostMalformed, []byte(wrapped.Error()), wrapped
@@ -689,7 +718,7 @@ func (e *Engine) resolveImport(
 	state.mu.Unlock()
 
 	content = bytes.Clone(content)
-	payload, err := json.Marshal(protocol.ImportResponse{
+	encoded, err := json.Marshal(protocol.ImportResponse{
 		Canonical: canonical,
 		Content:   content,
 	})
@@ -701,23 +730,35 @@ func (e *Engine) resolveImport(
 		}
 		return protocol.HostHandlerFailure, []byte(wrapped.Error()), wrapped
 	}
-	if uint64(len(payload)) > uint64(state.limits.MaxHostResponseBytes) {
+	if uint64(len(encoded)) > uint64(state.limits.MaxHostResponseBytes) {
 		limit := &LimitError{
 			Resource: "import response bytes",
 			Limit:    uint64(state.limits.MaxHostResponseBytes),
-			Actual:   uint64(len(payload)),
+			Actual:   uint64(len(encoded)),
 		}
 		return protocol.HostLimit, []byte(limit.Error()), limit
 	}
-	return protocol.HostOK, payload, nil
+	resolvedPath = canonical
+	servedBytes = len(content)
+	return protocol.HostOK, encoded, nil
 }
 
 func (e *Engine) callCapability(
 	ctx context.Context,
 	state *invocationState,
 	raw []byte,
-) (uint32, []byte, error) {
+) (status uint32, payload []byte, err error) {
 	var request protocol.CapabilityRequest
+	// Named results let one deferred hook observe every outcome below.
+	started := time.Now()
+	defer func() {
+		e.observeCapability(ctx, CapabilityEvent{
+			Name:     request.Name,
+			Args:     len(request.Args),
+			Duration: time.Since(started),
+			Err:      err,
+		})
+	}()
 	if err := protocol.DecodeJSON(raw, &request); err != nil {
 		wrapped := &ABIError{Err: fmt.Errorf("decode capability request: %w", err)}
 		return protocol.HostMalformed, []byte(wrapped.Error()), wrapped
@@ -759,20 +800,20 @@ func (e *Engine) callCapability(
 		failure := &CapabilityError{Name: request.Name, Err: fmt.Errorf("result is not JSON-compatible: %w", err)}
 		return protocol.HostHandlerFailure, []byte(failure.Error()), failure
 	}
-	payload, err := json.Marshal(protocol.CapabilityResponse{Value: encodedValue})
+	encoded, err := json.Marshal(protocol.CapabilityResponse{Value: encodedValue})
 	if err != nil {
 		failure := &CapabilityError{Name: request.Name, Err: fmt.Errorf("encode result envelope: %w", err)}
 		return protocol.HostHandlerFailure, []byte(failure.Error()), failure
 	}
-	if uint64(len(payload)) > uint64(state.limits.MaxHostResponseBytes) {
+	if uint64(len(encoded)) > uint64(state.limits.MaxHostResponseBytes) {
 		limit := &LimitError{
 			Resource: "capability response bytes",
 			Limit:    uint64(state.limits.MaxHostResponseBytes),
-			Actual:   uint64(len(payload)),
+			Actual:   uint64(len(encoded)),
 		}
 		return protocol.HostLimit, []byte(limit.Error()), limit
 	}
-	return protocol.HostOK, payload, nil
+	return protocol.HostOK, encoded, nil
 }
 
 var allowedWASIImports = map[string]struct{}{
