@@ -11,6 +11,25 @@ go_jsonnet_bin="$(cd "$(dirname "${GO_JSONNET_BIN}")" && pwd)/$(basename "${GO_J
 work_dir="$(mktemp -d)"
 trap 'rm -rf "${work_dir}"' EXIT
 
+# expected_failure_exit reports the exit status Sonnetbox must use for a fixture
+# the oracle rejects. Requiring a specific status stops an exhausted budget or a
+# host fault from passing as if it were the Jsonnet error upstream reported.
+#
+# Every fixture defaults to 2, a static or runtime Jsonnet error. A fixture
+# listed here diverges for a documented reason.
+expected_failure_exit() {
+  case "$1" in
+  # An empty import path is rejected at the host ABI boundary before any
+  # importer sees it, so it surfaces as a host failure rather than a Jsonnet
+  # error.
+  error.import_empty.jsonnet) printf '1' ;;
+  # Security policy outranks compatibility: the backslash in this verbatim path
+  # is denied by import policy, so the missing file is never reached.
+  error.verbatim_import.jsonnet) printf '4' ;;
+  *) printf '2' ;;
+  esac
+}
+
 find "${suite_dir}" -maxdepth 1 -type f -name '*.jsonnet' -print |
   LC_ALL=C sort >"${work_dir}/fixtures"
 
@@ -75,14 +94,18 @@ while IFS= read -r fixture; do
     fi
   else
     failures=$((failures + 1))
-    if [[ "${subject_status}" == 0 ]]; then
-      echo "FAIL ${name}: oracle failed with status ${oracle_status}, Sonnetbox succeeded" >&2
+    want_status="$(expected_failure_exit "${name}")"
+    if [[ "${subject_status}" != "${want_status}" ]]; then
+      echo "FAIL ${name}: oracle failed with status ${oracle_status}," \
+        "Sonnetbox exited ${subject_status}, want ${want_status}" >&2
+      cat "${subject_output}" >&2
       mismatches=$((mismatches + 1))
     fi
   fi
 done <"${work_dir}/fixtures"
 
-echo "Jsonnet conformance: ${successes} successes, ${failures} expected failures, ${mismatches} mismatches"
+echo "Jsonnet conformance: ${successes} matching successes," \
+  "${failures} failures rejected with the expected status, ${mismatches} mismatches"
 if [[ "${successes}" != 70 ]] || [[ "${failures}" != 103 ]] || [[ "${mismatches}" != 0 ]]; then
   exit 1
 fi

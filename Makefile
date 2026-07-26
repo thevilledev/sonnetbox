@@ -9,9 +9,13 @@ FUZZ_TIME ?= 10s
 BENCH_TIME ?= 5x
 BENCH_TIMEOUT ?= 20m
 COVERAGE_MIN ?= 70
-JSONNET_SUITE_DIR ?= ../jsonnet/test_suite
 GO_JSONNET_VERSION = $(strip $(shell $(GO) list -m -f '{{.Version}}' github.com/google/go-jsonnet))
 BUILD_DIR := build
+# The conformance oracle is the upstream C++ suite at one pinned commit. Keep
+# this in step with the ref the CI job checks out.
+JSONNET_SUITE_REF ?= 5aec27e03a61dae06461becb95089b15fe217233
+JSONNET_SUITE_CACHE := $(BUILD_DIR)/conformance/jsonnet-$(JSONNET_SUITE_REF)
+JSONNET_SUITE_DIR ?= $(JSONNET_SUITE_CACHE)/test_suite
 COVERAGE_PROFILE := $(BUILD_DIR)/coverage.out
 WASM := internal/guestblob/sonnetbox.wasm
 WASM_CHECKSUM := internal/guestblob/sonnetbox.wasm.sha256
@@ -33,7 +37,24 @@ cli:
 	CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) build -trimpath \
 		-o $(BUILD_DIR)/sonnetbox ./cmd/sonnetbox
 
-conformance: cli
+# conformance-suite fetches the pinned upstream suite so the comparison runs
+# from a bare checkout. A caller-supplied JSONNET_SUITE_DIR is used as is.
+conformance-suite:
+	@set -eu; \
+	if [ -d "$(JSONNET_SUITE_DIR)" ]; then exit 0; fi; \
+	if [ "$(JSONNET_SUITE_DIR)" != "$(JSONNET_SUITE_CACHE)/test_suite" ]; then \
+		echo "JSONNET_SUITE_DIR $(JSONNET_SUITE_DIR) does not exist" >&2; \
+		exit 1; \
+	fi; \
+	rm -rf "$(JSONNET_SUITE_CACHE)"; \
+	mkdir -p "$(JSONNET_SUITE_CACHE)"; \
+	git -C "$(JSONNET_SUITE_CACHE)" init -q; \
+	git -C "$(JSONNET_SUITE_CACHE)" remote add origin \
+		https://github.com/google/jsonnet.git; \
+	git -C "$(JSONNET_SUITE_CACHE)" fetch -q --depth 1 origin $(JSONNET_SUITE_REF); \
+	git -C "$(JSONNET_SUITE_CACHE)" checkout -q FETCH_HEAD
+
+conformance: cli conformance-suite
 	@mkdir -p $(BUILD_DIR)/conformance/bin
 	GOBIN=$(abspath $(BUILD_DIR)/conformance/bin) GOTOOLCHAIN=local \
 		$(GO) install github.com/google/go-jsonnet/cmd/jsonnet@$(GO_JSONNET_VERSION)
