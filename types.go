@@ -20,39 +20,44 @@ const (
 
 // EngineConfig sets resource ceilings for an Engine. A zero field selects the
 // documented default for that field.
+//
+// EngineConfig holds only policy values, so it round-trips through JSON and
+// can be loaded from an operator-supplied policy file. Use
+// [DefaultEngineConfig] to discover the defaults and [Ceilings] to discover
+// the maximum value each field accepts.
 type EngineConfig struct {
 	// MaxMemoryBytes limits each guest's linear memory. It must be a multiple
 	// of 64 KiB.
-	MaxMemoryBytes uint64
+	MaxMemoryBytes uint64 `json:"max_memory_bytes"`
 	// MaxFuel limits deterministic WebAssembly instruction work during one
 	// evaluation.
-	MaxFuel uint64
+	MaxFuel uint64 `json:"max_fuel"`
 	// MaxSourceBytes limits Request.Source in bytes.
-	MaxSourceBytes uint32
+	MaxSourceBytes uint32 `json:"max_source_bytes"`
 	// MaxOutputBytes limits the rendered result in bytes.
-	MaxOutputBytes uint32
+	MaxOutputBytes uint32 `json:"max_output_bytes"`
 	// MaxStack limits go-jsonnet interpreter stack depth.
-	MaxStack int
+	MaxStack int `json:"max_stack"`
 	// MaxImports limits import resolutions during one evaluation.
-	MaxImports uint32
+	MaxImports uint32 `json:"max_imports"`
 	// MaxImportBytes limits one imported file in bytes.
-	MaxImportBytes uint32
+	MaxImportBytes uint32 `json:"max_import_bytes"`
 	// MaxTotalImportBytes limits all imported content during one evaluation.
-	MaxTotalImportBytes uint64
+	MaxTotalImportBytes uint64 `json:"max_total_import_bytes"`
 	// MaxCapabilityCalls limits native capability calls during one evaluation.
-	MaxCapabilityCalls uint32
+	MaxCapabilityCalls uint32 `json:"max_capability_calls"`
 	// MaxHostRequestBytes limits encoded requests crossing from guest to host
 	// and the encoded evaluation request crossing from host to guest.
-	MaxHostRequestBytes uint32
+	MaxHostRequestBytes uint32 `json:"max_host_request_bytes"`
 	// MaxHostResponseBytes limits encoded responses crossing from host to
 	// guest. Import content is base64-encoded within this limit. Nonzero values
 	// must be at least 256 bytes.
-	MaxHostResponseBytes uint32
+	MaxHostResponseBytes uint32 `json:"max_host_response_bytes"`
 	// MaxTraceBytes limits captured std.trace output during one evaluation.
-	MaxTraceBytes uint32
+	MaxTraceBytes uint32 `json:"max_trace_bytes"`
 	// MaxConcurrentEvaluations limits active guest instances. Additional
 	// evaluations wait for capacity while honoring context cancellation.
-	MaxConcurrentEvaluations uint32
+	MaxConcurrentEvaluations uint32 `json:"max_concurrent_evaluations"`
 }
 
 // RequestLimits lowers resource limits for one evaluation. A zero field
@@ -60,27 +65,27 @@ type EngineConfig struct {
 // exceed that ceiling.
 type RequestLimits struct {
 	// MaxFuel lowers EngineConfig.MaxFuel.
-	MaxFuel uint64
+	MaxFuel uint64 `json:"max_fuel,omitempty"`
 	// MaxSourceBytes lowers EngineConfig.MaxSourceBytes.
-	MaxSourceBytes uint32
+	MaxSourceBytes uint32 `json:"max_source_bytes,omitempty"`
 	// MaxOutputBytes lowers EngineConfig.MaxOutputBytes.
-	MaxOutputBytes uint32
+	MaxOutputBytes uint32 `json:"max_output_bytes,omitempty"`
 	// MaxStack lowers EngineConfig.MaxStack.
-	MaxStack int
+	MaxStack int `json:"max_stack,omitempty"`
 	// MaxImports lowers EngineConfig.MaxImports.
-	MaxImports uint32
+	MaxImports uint32 `json:"max_imports,omitempty"`
 	// MaxImportBytes lowers EngineConfig.MaxImportBytes.
-	MaxImportBytes uint32
+	MaxImportBytes uint32 `json:"max_import_bytes,omitempty"`
 	// MaxTotalImportBytes lowers EngineConfig.MaxTotalImportBytes.
-	MaxTotalImportBytes uint64
+	MaxTotalImportBytes uint64 `json:"max_total_import_bytes,omitempty"`
 	// MaxCapabilityCalls lowers EngineConfig.MaxCapabilityCalls.
-	MaxCapabilityCalls uint32
+	MaxCapabilityCalls uint32 `json:"max_capability_calls,omitempty"`
 	// MaxHostRequestBytes lowers EngineConfig.MaxHostRequestBytes.
-	MaxHostRequestBytes uint32
+	MaxHostRequestBytes uint32 `json:"max_host_request_bytes,omitempty"`
 	// MaxHostResponseBytes lowers EngineConfig.MaxHostResponseBytes.
-	MaxHostResponseBytes uint32
+	MaxHostResponseBytes uint32 `json:"max_host_response_bytes,omitempty"`
 	// MaxTraceBytes lowers EngineConfig.MaxTraceBytes.
-	MaxTraceBytes uint32
+	MaxTraceBytes uint32 `json:"max_trace_bytes,omitempty"`
 }
 
 // Importer resolves a Jsonnet import without granting guest filesystem access.

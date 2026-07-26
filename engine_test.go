@@ -173,6 +173,60 @@ func TestEngineConfigValidation(t *testing.T) {
 	}
 }
 
+func TestPolicySurfaceIsDiscoverable(t *testing.T) {
+	defaults := DefaultEngineConfig()
+	if defaults != defaultConfig {
+		t.Fatalf("DefaultEngineConfig() = %#v, want %#v", defaults, defaultConfig)
+	}
+	ceilings := Ceilings()
+	if ceilings != hardCeilings {
+		t.Fatalf("Ceilings() = %#v, want %#v", ceilings, hardCeilings)
+	}
+
+	defaults.MaxFuel = 1
+	if DefaultEngineConfig().MaxFuel == 1 {
+		t.Fatal("DefaultEngineConfig() exposes shared mutable state")
+	}
+	ceilings.MaxFuel = 1
+	if Ceilings().MaxFuel == 1 {
+		t.Fatal("Ceilings() exposes shared mutable state")
+	}
+
+	if _, err := normalizeConfig(Ceilings()); err != nil {
+		t.Fatalf("the reported ceilings must be a valid configuration: %v", err)
+	}
+}
+
+func TestEngineConfigReportsEffectivePolicy(t *testing.T) {
+	engine := newTestEngine(t, EngineConfig{MaxImports: 7})
+	effective := engine.Config()
+	if effective.MaxImports != 7 {
+		t.Fatalf("MaxImports = %d, want 7", effective.MaxImports)
+	}
+	if effective.MaxFuel != defaultConfig.MaxFuel {
+		t.Fatalf("MaxFuel = %d, want the default %d", effective.MaxFuel, defaultConfig.MaxFuel)
+	}
+}
+
+func TestEngineConfigRoundTripsThroughJSON(t *testing.T) {
+	original := DefaultEngineConfig()
+	original.MaxImports = 11
+	encoded, err := json.Marshal(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"max_imports":11`) {
+		t.Fatalf("encoded policy is missing a stable field name: %s", encoded)
+	}
+	var decoded EngineConfig
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded != original {
+		t.Fatalf("round-trip = %#v, want %#v", decoded, original)
+	}
+}
+
 func TestRequestLimitsInheritAndRejectEngineOverflow(t *testing.T) {
 	config, err := normalizeConfig(EngineConfig{
 		MaxFuel:              50_000_000,

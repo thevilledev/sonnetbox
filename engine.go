@@ -63,6 +63,20 @@ var hardCeilings = EngineConfig{
 	MaxConcurrentEvaluations: 1024,
 }
 
+// DefaultEngineConfig returns the ceilings that a zero-valued EngineConfig
+// selects. Callers can start from these defaults, adjust individual fields,
+// and pass the result to NewEngine.
+func DefaultEngineConfig() EngineConfig {
+	return defaultConfig
+}
+
+// Ceilings returns the library's hard maximum for every EngineConfig field.
+// NewEngine rejects any configuration above these values, so an operator
+// policy can never widen the sandbox beyond them.
+func Ceilings() EngineConfig {
+	return hardCeilings
+}
+
 // Engine owns a compiled guest module and instantiates a fresh guest for every
 // evaluation. An Engine is safe for concurrent use and must be closed when it
 // is no longer needed.
@@ -179,6 +193,15 @@ func validateABIVersion(version uint32) error {
 	return &ABIError{
 		Err: fmt.Errorf("version %d does not match host version %d", version, protocol.ABIVersion),
 	}
+}
+
+// Config returns the effective configuration after defaults were applied and
+// validation passed. It is useful for logging or reporting the policy that is
+// actually in force, which may differ from the requested configuration.
+func (e *Engine) Config() EngineConfig {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.config
 }
 
 // Version reports the embedded go-jsonnet evaluator and private host/guest ABI
