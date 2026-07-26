@@ -1035,6 +1035,7 @@ func TestGenericHostCallDispatchAndValidation(t *testing.T) {
 		request: Request{
 			Capabilities: map[string]Capability{
 				"echo": {
+					Params: []string{"value"},
 					Call: func(_ context.Context, args []any) (any, error) {
 						return args[0], nil
 					},
@@ -1134,6 +1135,61 @@ func TestGenericHostCallDispatchAndValidation(t *testing.T) {
 			length,
 			errorState.error(),
 		)
+	}
+}
+
+func TestCapabilityArityMismatchIsRejected(t *testing.T) {
+	mod := wazerotest.NewModule(wazerotest.NewMemory(64))
+	// A well-behaved guest builds the signature from the declared parameters,
+	// so this request could only come from a broken or hostile guest.
+	request := []byte(`{"name":"pair","args":[1]}`)
+	const requestPtr = uint32(64)
+	const responsePtr = uint32(1024)
+	const responseCap = uint32(256)
+	if !mod.Memory().Write(requestPtr, request) {
+		t.Fatal("write request")
+	}
+
+	var called bool
+	state := &invocationState{
+		limits: RequestLimits{
+			MaxHostRequestBytes:  responseCap,
+			MaxHostResponseBytes: responseCap,
+			MaxCapabilityCalls:   1,
+		},
+		request: Request{
+			Capabilities: map[string]Capability{
+				"pair": {
+					Params: []string{"first", "second"},
+					Call: func(_ context.Context, args []any) (any, error) {
+						called = true
+						return args[1], nil
+					},
+				},
+			},
+		},
+	}
+	ctx := context.WithValue(context.Background(), invocationKey{}, state)
+	engine := &Engine{}
+	packed := engine.hostCall(
+		ctx,
+		mod,
+		protocol.OperationCallCapability,
+		requestPtr,
+		uint32(len(request)),
+		responsePtr,
+		responseCap,
+	)
+	status, _ := protocol.Unpack(packed)
+	if status != protocol.HostMalformed {
+		t.Fatalf("status = %d, want HostMalformed for an arity mismatch", status)
+	}
+	if called {
+		t.Fatal("the handler must not run with fewer arguments than it declared")
+	}
+	var capabilityErr *CapabilityError
+	if !errors.As(state.error(), &capabilityErr) {
+		t.Fatalf("expected CapabilityError, got %T: %v", state.error(), state.error())
 	}
 }
 

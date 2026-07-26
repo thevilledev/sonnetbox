@@ -785,6 +785,20 @@ func (e *Engine) callCapability(
 		failure := &CapabilityError{Name: request.Name, Err: errors.New("capability is not registered")}
 		return protocol.HostDenied, []byte(failure.Error()), failure
 	}
+	// The guest builds the native signature from the declared parameters, so a
+	// mismatch means the ABI was violated. Rejecting it here keeps a handler
+	// from indexing past the arguments it was promised.
+	if len(request.Args) != len(capability.Params) {
+		failure := &CapabilityError{
+			Name: request.Name,
+			Err: fmt.Errorf(
+				"guest passed %d arguments, want %d",
+				len(request.Args),
+				len(capability.Params),
+			),
+		}
+		return protocol.HostMalformed, []byte(failure.Error()), failure
+	}
 
 	value, callErr := capability.Call(ctx, request.Args)
 	if ctxErr := ctx.Err(); ctxErr != nil {
