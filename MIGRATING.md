@@ -89,10 +89,10 @@ other secure default.
 | `NativeFunction` | Compatibility VM | Must be pure and JSON-compatible |
 | `SetTraceOut` | Compatibility VM | Successful trace is bounded, buffered, then written after evaluation |
 | Custom `Importer` | `AdaptImporter` | Trusted adapter serializes importer calls |
-| `FileImporter` / `JPaths` | `WorkspaceImporter` | Must declare one root; root escape is denied |
+| `FileImporter` / `JPaths` | `WorkspaceImporter` | Each path is an explicit grant; root escape is denied |
+| `FindDependencies` | Compatibility VM | Reports what an evaluation resolved, not a static parse |
 | Parse, AST, formatter, linter | Keep go-jsonnet tooling | Not part of the sandbox runtime API |
 | Debugger and custom evaluator internals | No compatibility layer | Requires redesign or trusted pre-processing |
-| Dependency discovery | No compatibility layer | Record imports in a custom importer if needed |
 
 The compatibility VM is intentionally not source-compatible: every evaluation
 takes a context. That context is the cancellation and CPU-budget boundary and
@@ -143,12 +143,55 @@ boundaries more visible.
 ### Filesystem assumptions
 
 This is usually the largest change. A `FileImporter` can follow process paths,
-working-directory assumptions, and broad `JPaths`. Secure execution requires a
-declared virtual root.
+working-directory assumptions, and broad `JPaths`. Secure execution requires
+every directory to be a declared grant.
 
 Use `NewWorkspaceImporter(root, WithLibraryPaths(...))` for a checked-out
 repository. Root files and imports are read-only, and symlinks cannot escape
 the root. Paths passed to `EvaluateFile` become root-relative virtual paths.
+
+`JPaths` that do not all live under one directory are the common blocker. Add
+`WithSearchRoot(mountName, hostPath)` for each one that falls outside the
+workspace: every search root is a separate read-only grant with its own
+traversal-resistant root, and imports resolved there report paths beneath
+`mountName`. So this `FileImporter`:
+
+```go
+vm.Importer(&jsonnet.FileImporter{JPaths: []string{
+	"jsonnet/vendor",
+	"/opt/jsonnet-stdlib",
+}})
+```
+
+becomes:
+
+```go
+workspace, err := sonnetbox.NewWorkspaceImporter(
+	"jsonnet",
+	sonnetbox.WithLibraryPaths("vendor"),
+	sonnetbox.WithSearchRoot("stdlib", "/opt/jsonnet-stdlib"),
+)
+```
+
+Both forms share one precedence list searched in reverse declaration order, so
+search order is preserved. The mount name is the visible difference: an import
+served from `/opt/jsonnet-stdlib/k.libsonnet` is reported as
+`stdlib/k.libsonnet`. That keeps canonical paths unambiguous when two grants
+hold the same relative path, and it makes a relative import from a file found in
+a search root resolve inside that same root, as `FileImporter` does.
+
+### Dependency discovery
+
+`(*VM).FindDependencies` is available in the compatibility package, but it works
+differently. go-jsonnet walks a parsed AST; sonnetbox evaluates each entry point
+and reports the paths the evaluation resolved, from `Result.Imports`.
+
+For a build graph or watch mode that is usually what you want, since it reflects
+what the program actually reads. Three differences matter: Jsonnet laziness
+means an import the program never forces is absent, a conditional import appears
+only for the branch that was taken, and an entry point that fails to evaluate
+returns its error instead of a dependency list. If you need the static set, keep
+go-jsonnet for that step; it parses without evaluating and needs no sandbox.
 
 Use `NewMapImporter` when files already live in a database, bundle, request,
 or generated map. Use a custom importer for an artifact store or service, but
@@ -295,6 +338,14 @@ executable. The command supports common evaluation, variable, argument, and
 output workflows while requiring an explicit or tightly defaulted workspace,
 fixed resource ceilings, and a deadline. See the README's command-line section
 for the supported flags and intentional incompatibilities.
+
+Three habits from the `jsonnet` command need adjusting. `-J` outside `--root`
+now works and becomes its own read-only grant named after the directory's last
+path element, which shows up in import paths and error messages. `JSONNET_PATH`
+is ignored, and setting it prints a notice pointing at `-J`, because an ambient
+environment variable deciding what a program may read is the opposite of an
+explicit grant. And `-V NAME` without a value is refused rather than read from
+the environment; pass `-V NAME=$NAME` to keep the value explicit.
 
 A C++ application can adopt the sandbox through the command or by calling a
 small Go service or sidecar whose API accepts source, virtual files, variables,

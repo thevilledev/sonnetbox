@@ -222,13 +222,20 @@ timed out.
 This is deliberately a secure subset rather than a drop-in `jsonnet`
 replacement:
 
-- `JSONNET_PATH` is ignored;
+- `JSONNET_PATH` is ignored, and setting it prints a notice naming `-J`;
 - `--ext-str`, `--ext-code`, `--tla-str`, and `--tla-code` require
   `name=value` and never infer values from the environment;
-- variable-file flags, native functions, formatter and linter commands, and
-  exact upstream error text are not supported; and
-- the operator-selected input, workspace, output file, and output directory
-  are host-side grants, while Jsonnet itself receives no ambient host access.
+- native functions, formatter and linter commands, stack-trace cropping
+  (`-t`), garbage-collector tuning, and exact upstream error text are not
+  supported, and each is refused by name rather than as an unknown flag; and
+- the operator-selected input, workspace, library paths, variable files, output
+  file, and output directory are host-side grants, while Jsonnet itself
+  receives no ambient host access.
+
+`--ext-str-file`, `--ext-code-file`, `--tla-str-file`, and `--tla-code-file`
+are supported because the operator names the file on the command line. The host
+reads it directly, unlike upstream `jsonnet`, which resolves it through the
+importer and therefore through `JPaths`.
 
 ## Evaluation
 
@@ -261,6 +268,7 @@ relative paths and symlinks from escaping it:
 workspace, err := sonnetbox.NewWorkspaceImporter(
 	"./jsonnet",
 	sonnetbox.WithLibraryPaths("vendor", "lib"),
+	sonnetbox.WithSearchRoot("stdlib", "/opt/jsonnet-stdlib"),
 )
 if err != nil {
 	log.Fatal(err)
@@ -268,11 +276,29 @@ if err != nil {
 defer workspace.Close()
 ```
 
-Library paths follow go-jsonnet `FileImporter` precedence. Virtual paths use
-canonical `/` separators. Normal relative imports such as `./lib.jsonnet` and
-`../shared.libsonnet` work when their resolved path remains inside the virtual
-root. Absolute paths, backslashes, volume-qualified paths, and root escapes
-are denied.
+`WithLibraryPaths` names directories inside the workspace root.
+`WithSearchRoot` grants a directory outside it as a separate read-only root,
+which is how a go-jsonnet `FileImporter` with absolute or disjoint `JPaths` is
+expressed without widening the workspace. Each search root gets its own
+traversal-resistant root, and imports resolved there report paths beneath the
+mount name, so `stdlib/k.libsonnet` is distinguishable from a `k.libsonnet` in
+the workspace and resolves its own relative imports inside `stdlib`.
+
+Every declaration shares one precedence list, searched in reverse declaration
+order after the importing file's own directory, matching `FileImporter`. Virtual
+paths use canonical `/` separators. Normal relative imports such as
+`./lib.jsonnet` and `../shared.libsonnet` work when their resolved path remains
+inside the granted root. Absolute paths, backslashes, volume-qualified paths,
+and root escapes are denied.
+
+`Result.Imports` reports the canonical paths an evaluation resolved,
+deduplicated and in resolution order, bounded by `MaxImports`. It records what
+the evaluation actually needed rather than what the source text mentions, so a
+lazily unused import is absent.
+
+The `sonnetbox` CLI maps `-J` onto both forms: a path inside `--root` becomes a
+library path, and one outside it becomes a search root named after its last path
+element.
 
 Custom importers are trusted host code. They receive the evaluation context,
 must return stable content for a canonical path, and must be safe for calls
@@ -443,7 +469,9 @@ module and verifies its bytes and checked-in SHA-256 checksum.
 
 Run `make check` for formatting, module, lint, coverage, portability, and WASM
 reproducibility checks. `make race` and `make fuzz-smoke` provide the extended
-checks.
+checks. `make conformance` compares against the pinned upstream Jsonnet suite,
+and `make bench` reports the performance figures published in
+[MIGRATING.md](MIGRATING.md).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the local workflow and
 [SECURITY.md](SECURITY.md) for private vulnerability reporting.
