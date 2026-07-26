@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	nativejsonnet "github.com/google/go-jsonnet"
@@ -411,6 +412,44 @@ type errorWriter struct {
 
 func (writer errorWriter) Write([]byte) (int, error) {
 	return 0, writer.err
+}
+
+func TestTraceIsWrittenForAFailedEvaluation(t *testing.T) {
+	engine, err := sonnetbox.NewEngine(context.Background(), RecommendedEngineConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := engine.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+
+	nativeVM := nativejsonnet.MakeVM()
+	secureVM := newTestVM(t, engine)
+	var nativeTrace bytes.Buffer
+	var secureTrace bytes.Buffer
+	nativeVM.SetTraceOut(&nativeTrace)
+	secureVM.SetTraceOut(&secureTrace)
+
+	// The message forces the traced value, which laziness would otherwise skip.
+	source := `error "nope: " + std.trace("reached the guard", "detail")`
+	if _, err := nativeVM.EvaluateAnonymousSnippet("input.jsonnet", source); err == nil {
+		t.Fatal("go-jsonnet accepted a failing program")
+	}
+	if _, err := secureVM.EvaluateAnonymousSnippet(
+		context.Background(),
+		"input.jsonnet",
+		source,
+	); err == nil {
+		t.Fatal("sonnetbox accepted a failing program")
+	}
+	if !strings.Contains(nativeTrace.String(), "reached the guard") {
+		t.Fatalf("go-jsonnet trace = %q", nativeTrace.String())
+	}
+	if !strings.Contains(secureTrace.String(), "reached the guard") {
+		t.Fatalf("sonnetbox trace = %q, want the trace from before the failure", secureTrace.String())
+	}
 }
 
 func newTestVM(t *testing.T, engine *sonnetbox.Engine) *VM {

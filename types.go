@@ -146,9 +146,10 @@ type Request struct {
 	CaptureTrace bool
 }
 
-// EvaluationStats reports work for a successful evaluation. FuelConsumed is
-// deterministic for the same guest and input; durations and other
-// host-observed counters are diagnostic.
+// EvaluationStats reports the work an evaluation performed, including one that
+// failed after the guest reported a status. FuelConsumed is deterministic for
+// the same guest and input; durations and other host-observed counters are
+// diagnostic.
 type EvaluationStats struct {
 	// QueueDuration is the time spent waiting for an engine concurrency slot.
 	QueueDuration time.Duration
@@ -172,6 +173,12 @@ type EvaluationStats struct {
 
 // Result is a completed Jsonnet evaluation. The request's OutputMode selects
 // Output, Files, or Documents for the manifested value.
+//
+// A failed evaluation still returns Trace and Stats alongside its error when
+// Request.CaptureTrace is set and the guest reached the point of reporting a
+// status. The manifested value is empty in that case. Nothing is recoverable
+// when the guest is trapped by a fuel, memory, or deadline backstop, because
+// no further guest call can succeed.
 type Result struct {
 	// Output contains single-mode rendered JSON or StringOutput bytes.
 	Output []byte

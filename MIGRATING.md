@@ -130,8 +130,9 @@ The following are not parity guarantees:
 - timing of trace writes; and
 - timing, count, or ordering of effectful native calls.
 
-Trace from a failed evaluation is not currently returned or written by the
-compatibility VM.
+Trace from a failed evaluation is written to the configured trace destination,
+matching go-jsonnet's behavior of emitting traces as they happen. The core API
+returns the same bytes in `Result.Trace` alongside the error.
 
 The final item is why capabilities must be pure. Jsonnet laziness already
 makes side effects unsafe, and crossing a sandbox makes retry and cancellation

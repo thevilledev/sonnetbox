@@ -365,8 +365,39 @@ func (e *Engine) evaluate(
 		return Result{}, &ABIError{Err: errors.New("guest returned invalid evaluation status")}
 	}
 	status := uint32(values[0]) //nolint:gosec // the preceding check rejects values outside uint32.
+
+	// The guest fills its trace buffer before reporting an error, so read the
+	// trace whatever the status. A trace is often the only evidence of why a
+	// template failed, and discarding it on failure hides it exactly when it
+	// matters most.
+	var trace []byte
+	var traceTruncated bool
+	if normalized.CaptureTrace {
+		trace, traceTruncated, err = e.readGuestTrace(
+			callCtx,
+			mod,
+			normalized.Limits.MaxTraceBytes,
+			normalized.Limits.MaxFuel,
+		)
+		if err != nil {
+			return Result{}, err
+		}
+	}
+	partial := func() Result {
+		return Result{
+			Trace: trace,
+			Stats: state.stats(
+				queueDuration,
+				time.Since(executionStarted),
+				normalized.Limits.MaxFuel-meter.Remaining(),
+				len(trace),
+				traceTruncated,
+			),
+		}
+	}
+
 	if hostErr := state.error(); status == protocol.EvalHostError && hostErr != nil {
-		return Result{}, hostErr
+		return partial(), hostErr
 	}
 
 	ptr, err := e.callU32(
@@ -376,7 +407,7 @@ func (e *Engine) evaluate(
 		normalized.Limits.MaxFuel,
 	)
 	if err != nil {
-		return Result{}, err
+		return partial(), err
 	}
 	length, err := e.callU32(
 		callCtx,
@@ -385,7 +416,7 @@ func (e *Engine) evaluate(
 		normalized.Limits.MaxFuel,
 	)
 	if err != nil {
-		return Result{}, err
+		return partial(), err
 	}
 	maxResult := normalized.Limits.MaxHostResponseBytes
 	if status == protocol.EvalOK {
@@ -393,36 +424,18 @@ func (e *Engine) evaluate(
 	}
 	payload, err := readGuestResult(mod, ptr, length, maxResult)
 	if err != nil {
-		return Result{}, err
+		return partial(), err
 	}
 	if status == protocol.EvalOK {
 		result, err := decodeResult(normalized.OutputMode, payload)
 		if err != nil {
-			return Result{}, err
+			return partial(), err
 		}
-		if normalized.CaptureTrace {
-			trace, truncated, err := e.readGuestTrace(
-				callCtx,
-				mod,
-				normalized.Limits.MaxTraceBytes,
-				normalized.Limits.MaxFuel,
-			)
-			if err != nil {
-				return Result{}, err
-			}
-			result.Trace = trace
-			result.Stats.TraceTruncated = truncated
-		}
-		result.Stats = state.stats(
-			queueDuration,
-			time.Since(executionStarted),
-			normalized.Limits.MaxFuel-meter.Remaining(),
-			len(result.Trace),
-			result.Stats.TraceTruncated,
-		)
+		result.Trace = trace
+		result.Stats = partial().Stats
 		return result, nil
 	}
-	return Result{}, guestStatusError(status, payload, normalized.Limits)
+	return partial(), guestStatusError(status, payload, normalized.Limits)
 }
 
 func (e *Engine) acquire(ctx context.Context) error {

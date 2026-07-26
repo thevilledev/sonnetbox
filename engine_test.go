@@ -173,6 +173,81 @@ func TestEngineConfigValidation(t *testing.T) {
 	}
 }
 
+func TestTraceSurvivesAFailedEvaluation(t *testing.T) {
+	engine := newTestEngine(t, EngineConfig{})
+	result, err := engine.Evaluate(context.Background(), Request{
+		// The message forces the traced value, which laziness would otherwise
+		// leave unevaluated.
+		Source:       `error "nope: " + std.trace("reached the guard", "detail")`,
+		CaptureTrace: true,
+	})
+	var evaluationErr *EvaluationError
+	if !errors.As(err, &evaluationErr) {
+		t.Fatalf("expected EvaluationError, got %T: %v", err, err)
+	}
+	if !strings.Contains(string(result.Trace), "reached the guard") {
+		t.Fatalf("trace = %q, want the traced message from before the failure", result.Trace)
+	}
+	if result.Stats.TraceBytes == 0 {
+		t.Fatal("stats must report the captured trace bytes on failure")
+	}
+	if result.Output != nil || result.Files != nil || result.Documents != nil {
+		t.Fatalf("a failed evaluation must not manifest a value: %#v", result)
+	}
+}
+
+func TestTraceIsAbsentWhenCaptureIsOff(t *testing.T) {
+	engine := newTestEngine(t, EngineConfig{})
+	result, err := engine.Evaluate(context.Background(), Request{
+		Source: `error "nope: " + std.trace("hidden", "detail")`,
+	})
+	if err == nil {
+		t.Fatal("expected the evaluation to fail")
+	}
+	if len(result.Trace) != 0 {
+		t.Fatalf("trace = %q, want nothing without CaptureTrace", result.Trace)
+	}
+}
+
+func TestStatsReportQueueDuration(t *testing.T) {
+	engine := newTestEngine(t, EngineConfig{MaxConcurrentEvaluations: 1})
+	release := make(chan struct{})
+	blocked := make(chan struct{})
+	var wait sync.WaitGroup
+	wait.Go(func() {
+		_, _ = engine.Evaluate(context.Background(), Request{
+			Source: `std.native("hold")()`,
+			Capabilities: map[string]Capability{
+				"hold": {Call: func(context.Context, []any) (any, error) {
+					close(blocked)
+					<-release
+					return true, nil
+				}},
+			},
+		})
+	})
+	<-blocked
+
+	// This evaluation cannot start until the slot frees, so it must observe a
+	// nonzero queue duration.
+	queued := make(chan EvaluationStats, 1)
+	go func() {
+		result, err := engine.Evaluate(context.Background(), Request{Source: `{a: 1}`})
+		if err != nil {
+			t.Errorf("queued evaluation: %v", err)
+		}
+		queued <- result.Stats
+	}()
+	time.Sleep(20 * time.Millisecond)
+	close(release)
+	wait.Wait()
+
+	stats := <-queued
+	if stats.QueueDuration <= 0 {
+		t.Fatalf("QueueDuration = %v, want a positive wait for the concurrency slot", stats.QueueDuration)
+	}
+}
+
 func TestNewEngineReportsAnAlreadyCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

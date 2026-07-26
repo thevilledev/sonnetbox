@@ -248,10 +248,7 @@ func (vm *VM) evaluate(
 	} else {
 		result, err = vm.engine.Evaluate(ctx, request)
 	}
-	if err != nil {
-		return sonnetbox.Result{}, err
-	}
-	return vm.writeTrace(result)
+	return vm.finish(result, err)
 }
 
 func (vm *VM) evaluateFile(
@@ -261,10 +258,24 @@ func (vm *VM) evaluateFile(
 ) (sonnetbox.Result, error) {
 	request := vm.request(filename, "", mode)
 	result, err := vm.engine.EvaluateFile(ctx, filename, request)
-	if err != nil {
-		return sonnetbox.Result{}, err
+	return vm.finish(result, err)
+}
+
+// finish writes any captured trace before surfacing the outcome, so a failed
+// evaluation still reports what the template traced on its way to failing. The
+// evaluation error outweighs a failure to write the trace.
+func (vm *VM) finish(
+	result sonnetbox.Result,
+	evaluationErr error,
+) (sonnetbox.Result, error) {
+	written, traceErr := vm.writeTrace(result)
+	if evaluationErr != nil {
+		return sonnetbox.Result{}, evaluationErr
 	}
-	return vm.writeTrace(result)
+	if traceErr != nil {
+		return sonnetbox.Result{}, traceErr
+	}
+	return written, nil
 }
 
 func (vm *VM) request(
