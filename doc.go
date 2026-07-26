@@ -25,4 +25,14 @@
 // [EngineConfig] sets engine-wide resource ceilings. A [Request] can lower
 // most ceilings for one evaluation through [RequestLimits], but cannot raise
 // them. Context cancellation provides the wall-clock backstop.
+// [DefaultEngineConfig] and [Ceilings] report both ends of the valid range,
+// [EngineConfig.Normalize] validates a policy without compiling the guest, and
+// [Engine.Config] reports the policy an engine enforces.
+//
+// An [Option] customizes an engine without widening the sandbox. Compiling the
+// guest dominates [NewEngine], so a process that cannot keep an engine alive
+// should reuse compiled code through [WithCompilationCache].
+// [WithDefaultImporter] and [WithDefaultCapabilities] apply one policy to every
+// request, and [WithObserver] reports imports, capability calls, and completed
+// evaluations for audit.
 package sonnetbox

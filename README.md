@@ -68,6 +68,34 @@ Create one long-lived `Engine` per policy profile. It compiles the embedded
 module once, is safe for concurrent evaluation, and creates a fresh guest for
 every request. Do not create an engine per evaluation.
 
+Compiling the guest dominates `NewEngine`. A process that cannot keep an
+engine alive, such as a short-lived command, should reuse compiled code
+through a cache:
+
+```go
+cache, err := sonnetbox.NewCompilationCacheDir(cacheDir)
+if err != nil {
+	log.Fatal(err)
+}
+defer cache.Close(context.Background())
+
+engine, err := sonnetbox.NewEngine(
+	context.Background(),
+	sonnetbox.EngineConfig{},
+	sonnetbox.WithCompilationCache(cache),
+)
+```
+
+A cache directory holds executable machine code that later runs in the
+process, so point it at a location only the current user can write.
+`WithInterpreter` is the alternative for a single evaluation: it starts in
+roughly a tenth of the time but evaluates several times slower.
+
+`WithDefaultImporter` and `WithDefaultCapabilities` attach an import policy
+and a native function set to the engine itself, so every request gets them
+without repeating the wiring at each call site. A request still wins where the
+two overlap, but cannot remove a default it did not replace.
+
 For runnable programs that progress from an inline evaluation to a
 request-serving integration, see the [examples](examples/README.md).
 
@@ -151,11 +179,40 @@ sonnetbox -y stream.jsonnet
 ```
 
 Run `sonnetbox --help` for the complete supported flag set. Every evaluation
-uses a fresh WASM guest, the library's default resource ceilings, and a
-five-second deadline configurable with a positive `--timeout` duration.
-`std.trace` is bounded and written to stderr. Multi-file names are
-source-controlled, so the command rejects absolute, non-canonical, and
-traversing names and confines writes beneath the requested output directory.
+uses a fresh WASM guest and a five-second deadline configurable with a
+positive `--timeout` duration. `std.trace` is bounded and written to stderr.
+Multi-file names are source-controlled, so the command rejects absolute,
+non-canonical, and traversing names and confines writes beneath the requested
+output directory.
+
+Every resource ceiling is adjustable. A flag sets one ceiling, `--policy`
+loads a JSON file of them, and a flag wins over the file. Sizes accept
+suffixes such as `512KiB` or `16MB`. The library validates the result, so a
+policy can only narrow what sonnetbox already permits:
+
+```sh
+sonnetbox --max-fuel 20000000 --max-memory 32MiB untrusted.jsonnet
+sonnetbox --policy ./sandbox-policy.json untrusted.jsonnet
+```
+
+`--print-policy` writes the effective ceilings as JSON, which is itself a
+valid `--policy` file, so operators can capture and version the defaults:
+
+```sh
+sonnetbox --print-policy > sandbox-policy.json
+```
+
+The command caches compiled guest code beneath the user cache directory, which
+takes a warm run from roughly 2.6 seconds to 0.12 seconds. Because the cache
+holds executable machine code, it is created private to the current user.
+`--cache-dir` moves it and `--no-cache` disables it.
+
+Failures are reported for people by default and for machines on request.
+`--error-format=json` writes a structured report naming the error kind, the
+exhausted resource and its limit, or the denied import path. Exit status
+distinguishes the failure classes: `0` success, `1` usage or host failure, `2`
+Jsonnet error, `3` exhausted budget, `4` denied import, and `5` canceled or
+timed out.
 
 This is deliberately a secure subset rather than a drop-in `jsonnet`
 replacement:
@@ -267,11 +324,31 @@ bounds guest instruction work, while a context deadline remains the wall-clock
 backstop for host callbacks and evaluation. Evaluations waiting for a
 concurrency slot also honor cancellation.
 
+Policy is a value, not a hidden constant. `DefaultEngineConfig` returns the
+table above, `Ceilings` returns the maximum each field accepts, and
+`Engine.Config` reports what an engine actually enforces. `EngineConfig`
+round-trips through JSON, and `EngineConfig.Normalize` applies and validates a
+policy without paying to compile the guest.
+
 Set `Request.CaptureTrace` to collect bounded `std.trace` output in
 `Result.Trace`. `Result.Stats` reports deterministic fuel consumed, queue and
 execution duration, import count and bytes, capability calls, trace bytes, and
 trace truncation. Fuel is an abstract instruction unit, not elapsed time or a
 billing unit; the other fields are host-observed diagnostics.
+
+A failed evaluation returns its trace and statistics alongside the error, so
+the evidence of why a template failed is not discarded. Nothing is recoverable
+when a fuel, memory, or deadline backstop traps the guest, because no further
+guest call can succeed.
+
+`WithObserver` reports activity as it happens rather than as a total
+afterwards, which is what an audit trail needs. Hooks cover every import
+attempt, including the denials that a program probing for ungranted files
+would otherwise perform invisibly, every capability call, and every completed
+evaluation. `NewSlogObserver` writes them through `log/slog` with denials at
+warn level. Events carry paths, sizes, counts, and outcomes but never imported
+content or capability arguments, so an audit log cannot become a copy of the
+data crossing the sandbox.
 
 `Version()` reports the embedded go-jsonnet version and the private
 host/guest ABI version, which is useful in logs and compatibility reports.
@@ -313,6 +390,19 @@ configured instruction budget. The caller's context deadline, enforced with
 `WithCloseOnContextDone(true)`, remains the wall-clock backstop. Trusted host
 handlers do not consume guest fuel and can still block if they ignore
 cancellation.
+
+A compilation cache stores machine code compiled from the embedded guest and
+loads it into the process on a later run, so its directory is part of the
+trusted computing base. Anyone who can write there can execute code as the
+user running sonnetbox. The command creates its cache private to the current
+user; a host passing its own directory must do the same and must never share
+one across trust boundaries. `--no-cache` removes the cache from the picture
+entirely.
+
+An observer sees paths, sizes, counts, and outcomes, never imported content or
+capability arguments, so enabling an audit trail does not widen exposure of
+the data crossing the sandbox. Hooks run inline on the evaluation path as
+trusted host code.
 
 The sandbox protects the host from adversarial Jsonnet, not from malicious
 importers or capabilities running as ordinary Go code. `Engine.Close` is
