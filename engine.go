@@ -114,8 +114,37 @@ type invocationState struct {
 	limits          RequestLimits
 	importCalls     uint32
 	importBytes     uint64
+	resolved        []string
+	resolvedSeen    map[string]struct{}
 	capabilityCalls uint32
 	lastErr         error
+}
+
+// recordResolved appends one served import path in resolution order, ignoring
+// repeats. MaxImports bounds the number of calls, so the list cannot outgrow
+// that ceiling.
+func (s *invocationState) recordResolved(canonical string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, repeated := s.resolvedSeen[canonical]; repeated {
+		return
+	}
+	if s.resolvedSeen == nil {
+		s.resolvedSeen = make(map[string]struct{})
+	}
+	s.resolvedSeen[canonical] = struct{}{}
+	s.resolved = append(s.resolved, canonical)
+}
+
+// resolvedImports copies the served import paths, so a caller cannot reach the
+// slice an in-flight import would append to.
+func (s *invocationState) resolvedImports() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.resolved) == 0 {
+		return nil
+	}
+	return slices.Clone(s.resolved)
 }
 
 // NewEngine compiles the embedded guest and prepares an isolated Jsonnet
@@ -426,7 +455,8 @@ func (e *Engine) evaluate(
 	}
 	partial := func() Result {
 		return Result{
-			Trace: trace,
+			Trace:   trace,
+			Imports: state.resolvedImports(),
 			Stats: state.stats(
 				queueDuration,
 				time.Since(executionStarted),
@@ -472,8 +502,10 @@ func (e *Engine) evaluate(
 		if err != nil {
 			return partial(), err
 		}
+		observed := partial()
 		result.Trace = trace
-		result.Stats = partial().Stats
+		result.Imports = observed.Imports
+		result.Stats = observed.Stats
 		return result, nil
 	}
 	return partial(), guestStatusError(status, payload, normalized.Limits)
@@ -745,6 +777,7 @@ func (e *Engine) resolveImport(
 	}
 	resolvedPath = canonical
 	servedBytes = len(content)
+	state.recordResolved(canonical)
 	return protocol.HostOK, encoded, nil
 }
 

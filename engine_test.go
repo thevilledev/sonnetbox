@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -663,6 +664,80 @@ func TestEvaluateAnonymousUsesImporterRoot(t *testing.T) {
 	assertJSON(t, result.Output, float64(42))
 	if importedFrom != "" {
 		t.Fatalf("anonymous import came from %q", importedFrom)
+	}
+}
+
+func TestResultReportsResolvedImports(t *testing.T) {
+	importer, err := NewMapImporter(map[string][]byte{
+		"apps/main.jsonnet": []byte(`{
+  first: import "shared.libsonnet",
+  again: import "shared.libsonnet",
+  nested: import "../lib/nested.libsonnet",
+}`),
+		"apps/shared.libsonnet":  []byte(`{name: "shared"}`),
+		"lib/nested.libsonnet":   []byte(`import "leaf.libsonnet"`),
+		"lib/leaf.libsonnet":     []byte(`{leaf: true}`),
+		"apps/unused.libsonnet":  []byte(`"never forced"`),
+		"apps/failing.jsonnet":   []byte(`(import "shared.libsonnet") + error "stop"`),
+		"apps/untouched.jsonnet": []byte(`local unused = import "unused.libsonnet"; 1`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := newTestEngine(t, EngineConfig{})
+
+	result, err := engine.EvaluateFile(context.Background(), "apps/main.jsonnet", Request{
+		Importer: importer,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The entry point comes first, repeats collapse, and the order is the order
+	// the evaluation resolved them in.
+	want := []string{
+		"apps/main.jsonnet",
+		"apps/shared.libsonnet",
+		"lib/nested.libsonnet",
+		"lib/leaf.libsonnet",
+	}
+	if !slices.Equal(result.Imports, want) {
+		t.Fatalf("Imports = %q, want %q", result.Imports, want)
+	}
+	if uint32(len(result.Imports)) > result.Stats.ImportResolutions {
+		t.Fatalf(
+			"Imports has %d entries but only %d resolutions were counted",
+			len(result.Imports), result.Stats.ImportResolutions,
+		)
+	}
+
+	// Laziness decides what is a dependency: an unforced import is absent.
+	result, err = engine.EvaluateFile(context.Background(), "apps/untouched.jsonnet", Request{
+		Importer: importer,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(result.Imports, []string{"apps/untouched.jsonnet"}) {
+		t.Fatalf("Imports = %q, want only the entry point", result.Imports)
+	}
+
+	// A failed evaluation keeps the evidence of what it had already resolved.
+	result, err = engine.EvaluateFile(context.Background(), "apps/failing.jsonnet", Request{
+		Importer: importer,
+	})
+	if err == nil {
+		t.Fatal("expected the failing program to report an error")
+	}
+	if !slices.Contains(result.Imports, "apps/shared.libsonnet") {
+		t.Fatalf("Imports = %q, want the import resolved before the failure", result.Imports)
+	}
+
+	result, err = engine.Evaluate(context.Background(), Request{Source: `1`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Imports != nil {
+		t.Fatalf("Imports = %q, want nil without any import", result.Imports)
 	}
 }
 

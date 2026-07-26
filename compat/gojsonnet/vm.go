@@ -10,6 +10,7 @@ import (
 	"io"
 	"maps"
 	"os"
+	"path"
 	"slices"
 	"sync"
 
@@ -231,6 +232,57 @@ func (vm *VM) EvaluateFileStream(
 		return nil, err
 	}
 	return stringSlice(result.Documents), nil
+}
+
+// FindDependencies reports the canonical virtual paths that the given entry
+// points import, sorted and excluding the entry points themselves.
+//
+// This is not go-jsonnet's static walk of a parsed AST. Each entry point is
+// evaluated in the sandbox and the result reports what that evaluation actually
+// resolved, which has three consequences worth knowing before relying on it:
+// an import the program never forces is absent because Jsonnet is lazy, a
+// conditional import appears only when the taken branch needed it, and an entry
+// point that fails to evaluate or manifest returns its error instead of a
+// dependency list.
+func (vm *VM) FindDependencies(
+	ctx context.Context,
+	importedFrom string,
+	importedPaths []string,
+) ([]string, error) {
+	entries := make(map[string]struct{}, len(importedPaths))
+	dependencies := make(map[string]struct{})
+	for _, importedPath := range importedPaths {
+		entry := resolveEntryPath(importedFrom, importedPath)
+		result, err := vm.evaluateFile(ctx, entry, sonnetbox.OutputModeSingle)
+		if err != nil {
+			return nil, err
+		}
+		if len(result.Imports) == 0 {
+			return nil, fmt.Errorf("no import was resolved for %q", entry)
+		}
+		// EvaluateFile reads the entry through the importer before anything the
+		// entry imports, so the first resolution is the entry's own path.
+		entries[result.Imports[0]] = struct{}{}
+		for _, dependency := range result.Imports[1:] {
+			dependencies[dependency] = struct{}{}
+		}
+	}
+	for entry := range entries {
+		delete(dependencies, entry)
+	}
+	return slices.Sorted(maps.Keys(dependencies)), nil
+}
+
+// resolveEntryPath maps one FindDependencies argument onto a canonical virtual
+// path the way an import from importedFrom would resolve it.
+func resolveEntryPath(importedFrom, importedPath string) string {
+	if importedFrom == "" {
+		return path.Clean(importedPath)
+	}
+	if directory := path.Dir(importedFrom); directory != "." {
+		return path.Join(directory, importedPath)
+	}
+	return path.Clean(importedPath)
 }
 
 func (vm *VM) evaluate(

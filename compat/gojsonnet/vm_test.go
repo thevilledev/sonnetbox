@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -403,6 +404,74 @@ func TestCompatibilityValidation(t *testing.T) {
 		context.Canceled,
 	) {
 		t.Fatalf("expected context cancellation, got %v", err)
+	}
+}
+
+func TestFindDependenciesReportsResolvedImports(t *testing.T) {
+	engine, err := sonnetbox.NewEngine(context.Background(), RecommendedEngineConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := engine.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+
+	importer, err := sonnetbox.NewMapImporter(map[string][]byte{
+		"apps/main.jsonnet": []byte(`{
+  service: import "../lib/service.libsonnet",
+  shared: import "shared.libsonnet",
+}`),
+		"apps/shared.libsonnet":    []byte(`{name: "shared"}`),
+		"lib/service.libsonnet":    []byte(`{defaults: import "defaults.libsonnet"}`),
+		"lib/defaults.libsonnet":   []byte(`{replicas: 2}`),
+		"apps/other.jsonnet":       []byte(`import "unrelated.libsonnet"`),
+		"apps/unrelated.libsonnet": []byte(`1`),
+		"apps/unused.libsonnet":    []byte(`"never forced"`),
+		// A lazily bound import is never forced, so it is not a dependency of
+		// this evaluation even though the source names it.
+		"apps/lazy.jsonnet": []byte(`local unused = import "unused.libsonnet"; 1`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	vm := newTestVM(t, engine)
+	vm.Importer(importer)
+	vm.SetTraceOut(nil)
+
+	dependencies, err := vm.FindDependencies(
+		context.Background(),
+		"apps/entry.jsonnet",
+		[]string{"main.jsonnet", "other.jsonnet"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"apps/shared.libsonnet",
+		"apps/unrelated.libsonnet",
+		"lib/defaults.libsonnet",
+		"lib/service.libsonnet",
+	}
+	if !slices.Equal(dependencies, want) {
+		t.Fatalf("FindDependencies() = %q, want %q", dependencies, want)
+	}
+
+	lazy, err := vm.FindDependencies(context.Background(), "", []string{"apps/lazy.jsonnet"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lazy) != 0 {
+		t.Fatalf("FindDependencies() = %q, want no forced dependency", lazy)
+	}
+
+	if _, err := vm.FindDependencies(
+		context.Background(),
+		"apps/entry.jsonnet",
+		[]string{"missing.jsonnet"},
+	); err == nil {
+		t.Fatal("expected a missing entry point to fail")
 	}
 }
 

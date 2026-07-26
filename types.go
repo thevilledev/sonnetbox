@@ -191,6 +191,12 @@ type Result struct {
 	Documents [][]byte
 	// Trace contains captured std.trace output.
 	Trace []byte
+	// Imports lists the canonical paths the importer served, deduplicated and
+	// in resolution order. It reports what this evaluation actually resolved,
+	// not what a static parse of the source could reach, so a lazily unused
+	// import is absent and a conditional import appears only when the taken
+	// branch needed it. The list is bounded by the MaxImports ceiling.
+	Imports []string
 	// Stats reports bounded host-observed evaluation work.
 	Stats EvaluationStats
 }
