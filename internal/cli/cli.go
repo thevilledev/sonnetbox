@@ -30,10 +30,41 @@ const (
 
 var releaseVersion string
 
+// refusedOptions names upstream jsonnet options sonnetbox deliberately does not
+// implement, so a migrating operator reads the reason instead of a bare
+// unrecognized-option error.
+var refusedOptions = map[string]string{
+	"-t":                  "stack-trace cropping is not supported",
+	"--max-trace":         "stack-trace cropping is not supported",
+	"--gc-min-objects":    "the sandbox bounds guest memory; see --max-memory",
+	"--gc-growth-trigger": "the sandbox bounds guest memory; see --max-memory",
+	"--ext-str-env":       "sonnetbox never reads a value from the environment",
+	"--ext-code-env":      "sonnetbox never reads a value from the environment",
+}
+
+// bindingKind selects which request field a deferred variable file fills.
+type bindingKind int
+
+const (
+	bindingExtStr bindingKind = iota
+	bindingExtCode
+	bindingTLAStr
+	bindingTLACode
+)
+
+// varFile records an operator-named host file whose contents become a variable
+// value. The read is deferred until the source limit is known.
+type varFile struct {
+	kind bindingKind
+	name string
+	path string
+}
+
 type config struct {
 	input               string
 	exec                bool
 	jpaths              []string
+	varFiles            []varFile
 	outputFile          string
 	multiDir            string
 	createOutputDirs    bool
@@ -86,10 +117,24 @@ func Run(
 		}
 		return exitSuccess
 	}
+	warnIgnoredEnvironment(stderr)
 	if err := execute(ctx, cfg, stdin, stdout, stderr); err != nil {
 		return reportError(stderr, cfg.errorFormat, err)
 	}
 	return exitSuccess
+}
+
+// warnIgnoredEnvironment reports process state that upstream jsonnet would act
+// on. Silently ignoring it would leave an operator debugging imports that were
+// never granted.
+func warnIgnoredEnvironment(stderr io.Writer) {
+	if os.Getenv("JSONNET_PATH") == "" {
+		return
+	}
+	_, _ = fmt.Fprintln(
+		stderr,
+		"sonnetbox: JSONNET_PATH is ignored; grant library paths with --root and -J",
+	)
 }
 
 func parseArgs(args []string) (config, error) {
@@ -128,7 +173,7 @@ func parseArgs(args []string) (config, error) {
 		switch name {
 		case "-h", "--help":
 			cfg.help = true
-		case "--version":
+		case "-v", "--version":
 			cfg.version = true
 		case "-e", "--exec":
 			cfg.exec = true
@@ -196,6 +241,22 @@ func parseArgs(args []string) (config, error) {
 			if err := parseBinding(next, cfg.tlaCode); err != nil {
 				return config{}, fmt.Errorf("top-level code: %w", err)
 			}
+		case "--ext-str-file":
+			if err := parseVarFile(next, &cfg, bindingExtStr); err != nil {
+				return config{}, fmt.Errorf("external string file: %w", err)
+			}
+		case "--ext-code-file":
+			if err := parseVarFile(next, &cfg, bindingExtCode); err != nil {
+				return config{}, fmt.Errorf("external code file: %w", err)
+			}
+		case "--tla-str-file":
+			if err := parseVarFile(next, &cfg, bindingTLAStr); err != nil {
+				return config{}, fmt.Errorf("top-level string file: %w", err)
+			}
+		case "--tla-code-file":
+			if err := parseVarFile(next, &cfg, bindingTLACode); err != nil {
+				return config{}, fmt.Errorf("top-level code file: %w", err)
+			}
 		case "--root":
 			value, err := next()
 			if err != nil {
@@ -255,6 +316,9 @@ func parseArgs(args []string) (config, error) {
 				return config{}, err
 			}
 			if !handled {
+				if reason, refused := refusedOptions[name]; refused {
+					return config{}, fmt.Errorf("%s is not supported: %s", name, reason)
+				}
 				return config{}, fmt.Errorf("unrecognized option %q", arg)
 			}
 		}
@@ -291,11 +355,85 @@ func parseBinding(
 		return err
 	}
 	name, content, ok := strings.Cut(value, "=")
+	if !ok && value != "" {
+		// Upstream jsonnet reads a bare name from the environment. Doing so
+		// would make the evaluated value depend on ambient process state, so
+		// point at the explicit form instead.
+		return fmt.Errorf(
+			"%q is not in name=value form: sonnetbox never infers a value from "+
+				"the environment; pass it explicitly as %s=$%s",
+			value, value, value,
+		)
+	}
 	if !ok || name == "" {
 		return fmt.Errorf("%q is not in name=value form", value)
 	}
 	target[name] = content
 	return nil
+}
+
+// parseVarFile records a name=file binding. The file is an explicit operator
+// grant on the command line, so the host reads it directly rather than routing
+// it through the sandbox importer as upstream jsonnet does.
+func parseVarFile(
+	next func() (string, error),
+	cfg *config,
+	kind bindingKind,
+) error {
+	value, err := next()
+	if err != nil {
+		return err
+	}
+	name, filename, ok := strings.Cut(value, "=")
+	if !ok || name == "" || filename == "" {
+		return fmt.Errorf("%q is not in name=file form", value)
+	}
+	cfg.varFiles = append(cfg.varFiles, varFile{kind: kind, name: name, path: filename})
+	return nil
+}
+
+// loadVarFiles reads every deferred variable file once the source limit that
+// bounds it is known.
+func loadVarFiles(cfg config, limit uint32) error {
+	for _, file := range cfg.varFiles {
+		content, err := readVarFile(file.path, int64(limit))
+		if err != nil {
+			return err
+		}
+		switch file.kind {
+		case bindingExtStr:
+			cfg.extVars[file.name] = content
+		case bindingExtCode:
+			cfg.extCode[file.name] = content
+		case bindingTLAStr:
+			cfg.tlaVars[file.name] = content
+		case bindingTLACode:
+			cfg.tlaCode[file.name] = content
+		}
+	}
+	return nil
+}
+
+func readVarFile(filename string, limit int64) (string, error) {
+	// The path is an explicit operator grant, never a Jsonnet-supplied name.
+	file, err := os.Open(filename) //nolint:gosec // See the operator-grant comment above.
+	if err != nil {
+		return "", fmt.Errorf("open variable file: %w", err)
+	}
+	defer func() {
+		_ = file.Close()
+	}()
+	content, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil {
+		return "", fmt.Errorf("read variable file %q: %w", filename, err)
+	}
+	if int64(len(content)) > limit {
+		return "", fmt.Errorf(
+			"variable file %q exceeds source limit of %d bytes",
+			filename, limit,
+		)
+	}
+	return string(content), nil
 }
 
 func execute(
@@ -310,6 +448,9 @@ func execute(
 	}
 	policy, err := resolvePolicy(cfg)
 	if err != nil {
+		return err
+	}
+	if err := loadVarFiles(cfg, policy.MaxSourceBytes); err != nil {
 		return err
 	}
 	importer, filename, source, err := prepareInput(ctx, cfg, stdin, policy.MaxSourceBytes)
@@ -753,11 +894,15 @@ Input and imports:
                               is granted as its own read-only root
       --timeout <duration>    Evaluation deadline (default 5s)
 
-Variables and arguments (name=value is required):
+Variables and arguments (name=value is required; no environment inference):
   -V, --ext-str <name=value>  External string
       --ext-code <name=code>  External Jsonnet code
   -A, --tla-str <name=value>  Top-level string argument
       --tla-code <name=code>  Top-level Jsonnet argument
+      --ext-str-file <name=file>   Read an external string from a file
+      --ext-code-file <name=file>  Read external Jsonnet code from a file
+      --tla-str-file <name=file>   Read a top-level string from a file
+      --tla-code-file <name=file>  Read top-level Jsonnet code from a file
 
 Output:
   -o, --output-file <file>    Write output instead of stdout
@@ -782,7 +927,9 @@ Diagnostics:
 
 Other:
   -h, --help                  Show this help
-      --version               Show Sonnetbox, Jsonnet, and ABI versions
+  -v, --version               Show Sonnetbox, Jsonnet, and ABI versions
+
+JSONNET_PATH is ignored. Formatter and linter commands are not provided.
 
 Exit status: %d success, %d usage or host failure, %d Jsonnet error,
 %d exhausted budget, %d denied import, %d canceled or timed out.

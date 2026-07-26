@@ -205,6 +205,133 @@ func TestRunFileWorkspaceAndJPathPrecedence(t *testing.T) {
 	}
 }
 
+func TestRunReadsVariableFiles(t *testing.T) {
+	t.Parallel()
+
+	directory := t.TempDir()
+	writeTestFile(t, filepath.Join(directory, "name.txt"), "production")
+	writeTestFile(t, filepath.Join(directory, "replicas.jsonnet"), "1 + 2")
+	writeTestFile(t, filepath.Join(directory, "region.txt"), "eu-north-1")
+	writeTestFile(t, filepath.Join(directory, "flags.jsonnet"), `{beta: true}`)
+
+	status, stdout, stderr := run(context.Background(), t, []string{
+		"--ext-str-file", "environment=" + filepath.Join(directory, "name.txt"),
+		"--ext-code-file", "replicas=" + filepath.Join(directory, "replicas.jsonnet"),
+		"--tla-str-file", "region=" + filepath.Join(directory, "region.txt"),
+		"--tla-code-file", "flags=" + filepath.Join(directory, "flags.jsonnet"),
+		"-e", `function(region, flags) {
+  environment: std.extVar("environment"),
+  replicas: std.extVar("replicas"),
+  region: region,
+  beta: flags.beta,
+}`,
+	}, "")
+	if status != 0 || stderr != "" {
+		t.Fatalf("Run() = status %d, stderr %q", status, stderr)
+	}
+	want := "{\n   \"beta\": true,\n   \"environment\": \"production\"," +
+		"\n   \"region\": \"eu-north-1\",\n   \"replicas\": 3\n}\n"
+	if stdout != want {
+		t.Fatalf("stdout = %q, want %q", stdout, want)
+	}
+}
+
+func TestRunRejectsUnusableVariableFiles(t *testing.T) {
+	t.Parallel()
+
+	missing := filepath.Join(t.TempDir(), "absent.txt")
+	status, _, stderr := run(context.Background(), t, []string{
+		"--ext-str-file", "value=" + missing,
+		"-e", `std.extVar("value")`,
+	}, "")
+	if status != exitFailure || !strings.Contains(stderr, "open variable file") {
+		t.Fatalf("Run() = status %d, stderr %q; want a missing-file failure", status, stderr)
+	}
+
+	oversized := filepath.Join(t.TempDir(), "big.txt")
+	writeTestFile(t, oversized, strings.Repeat("x", 64))
+	status, _, stderr = run(context.Background(), t, []string{
+		"--max-source-bytes", "32",
+		"--ext-str-file", "value=" + oversized,
+		"-e", `std.extVar("value")`,
+	}, "")
+	if status != exitFailure || !strings.Contains(stderr, "exceeds source limit") {
+		t.Fatalf("Run() = status %d, stderr %q; want a source-limit failure", status, stderr)
+	}
+}
+
+func TestParseArgsExplainsMigrationRefusals(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "bare external string",
+			args: []string{"-V", "ENVIRONMENT", "input.jsonnet"},
+			want: "never infers a value from the environment",
+		},
+		{
+			name: "empty external string",
+			args: []string{"-V", "=value", "input.jsonnet"},
+			want: "is not in name=value form",
+		},
+		{
+			name: "max trace",
+			args: []string{"-t", "20", "input.jsonnet"},
+			want: "stack-trace cropping is not supported",
+		},
+		{
+			name: "garbage collector tuning",
+			args: []string{"--gc-min-objects", "1000", "input.jsonnet"},
+			want: "see --max-memory",
+		},
+		{
+			name: "unknown option",
+			args: []string{"--not-a-flag", "input.jsonnet"},
+			want: `unrecognized option "--not-a-flag"`,
+		},
+		{
+			name: "variable file without a name",
+			args: []string{"--ext-str-file", "values.txt", "input.jsonnet"},
+			want: "is not in name=file form",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := parseArgs(test.args)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("parseArgs() error = %v, want it to mention %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestRunShortVersionFlag(t *testing.T) {
+	t.Parallel()
+
+	status, stdout, stderr := run(context.Background(), t, []string{"-v"}, "")
+	if status != 0 || stderr != "" || !strings.HasPrefix(stdout, "sonnetbox ") {
+		t.Fatalf("Run() = status %d, stdout %q, stderr %q", status, stdout, stderr)
+	}
+}
+
+func TestRunReportsIgnoredJsonnetPath(t *testing.T) {
+	t.Setenv("JSONNET_PATH", string(filepath.ListSeparator)+"lib")
+
+	status, stdout, stderr := run(context.Background(), t, []string{"-e", `1`}, "")
+	if status != 0 || stdout != "1\n" {
+		t.Fatalf("Run() = status %d, stdout %q", status, stdout)
+	}
+	if !strings.Contains(stderr, "JSONNET_PATH is ignored") {
+		t.Fatalf("stderr = %q, want a JSONNET_PATH notice", stderr)
+	}
+}
+
 func TestRunGrantsJPathsOutsideTheWorkspaceRoot(t *testing.T) {
 	t.Parallel()
 
