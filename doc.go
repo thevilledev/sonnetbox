@@ -22,6 +22,12 @@
 // [Capability]. Both are trusted host code; implementations must honor context
 // cancellation and the concurrency contracts documented on those types.
 //
+// [NewMapImporter] serves an immutable virtual file set.
+// [NewWorkspaceImporter] serves a host directory, with [WithLibraryPaths] for
+// directories inside it and [WithSearchRoot] for a separately granted directory
+// outside it. Every grant is traversal-resistant, and [Result.Imports] reports
+// the canonical paths an evaluation actually resolved.
+//
 // [EngineConfig] sets engine-wide resource ceilings. A [Request] can lower
 // most ceilings for one evaluation through [RequestLimits], but cannot raise
 // them. Context cancellation provides the wall-clock backstop.
