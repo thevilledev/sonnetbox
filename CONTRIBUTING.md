@@ -4,7 +4,9 @@
 
 Use Go 1.25 or newer. The supported development and Wasm build toolchain is
 pinned in `.go-version`; golangci-lint is pinned in
-`.golangci-lint-version`.
+`.golangci-lint-version`. The Wasmtime reference host uses the exact Rust
+toolchain in `.rust-version`, with its dependency graph locked by
+`Cargo.lock`.
 
 Install [prek](https://github.com/j178/prek), then enable the repository's
 pre-commit hook:
@@ -26,11 +28,21 @@ make race
 make fuzz-smoke
 ```
 
-`make check` verifies formatting, module metadata, lint, coverage, the
-Cgo-free dependency graph, and the checked-in Wasm guest. CI runs the same
-checks as independent jobs.
+`make check` verifies Go and Rust formatting, module metadata, lint, tests,
+coverage, the Cgo-free dependency graph, cross-runtime conformance, and the
+checked-in Wasm guest. CI runs the same checks as independent jobs.
 
 To apply the configured Go formatters, run `make fmt`.
+
+For only the Wasmtime host, run:
+
+```sh
+make rust-check
+```
+
+Shared behavior belongs in `abi/v7/conformance.json` and must be asserted by
+both `conformance_test.go` and the Rust conformance test. Runtime-specific
+traps and policy backstops stay in the relevant host's tests.
 
 ## Updating the embedded guest
 

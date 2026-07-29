@@ -2,11 +2,13 @@
 
 The checked-in `guest/sonnetbox.wasm` is a WASI Preview 1 reactor. It can
 run under any WebAssembly runtime that supplies WASI Preview 1 and the host
-function described here. The Go package remains the reference host, but the
-ABI is public so another host can preserve the same isolation boundary.
+function described here. The Go package is the primary host, and
+`rust/sonnetbox-wasmtime` is the second reference implementation. The ABI is
+public so another host can preserve the same isolation boundary.
 
 ABI 7 is the first version with a public compatibility contract. The
-machine-readable manifest and example messages live in `abi/v7`.
+machine-readable manifest, example messages, and cases run by both reference
+hosts live in `abi/v7`.
 
 ## Versioning and artifact
 
@@ -155,7 +157,29 @@ one fuel model must not be silently reused with another. A host must give its
 fuel model a stable name, report that name with consumed fuel, and document
 whether a policy value belongs to that model.
 
-The official Go host uses `wazero-fuel-v1`. Other hosts must still provide a
-deterministic instruction limit and a wall-clock cancellation backstop. A host
-that cannot enforce both must describe itself as a weaker compatibility host,
-not as an implementation of the sonnetbox sandbox.
+The official Go host uses `wazero-fuel-v1`; the Wasmtime host uses
+`wasmtime-fuel-v1`. Both report the model alongside consumed fuel. The
+Wasmtime host supplies deterministic WASI random and clock sources because
+the compiled Go runtime uses those imports during initialization; Jsonnet
+receives no random or clock capability. Its independent wall-clock backstop is
+Wasmtime epoch interruption with a 10 ms tick.
+
+Other hosts must still provide a deterministic instruction limit and a
+wall-clock cancellation backstop. A host that cannot enforce both must
+describe itself as a weaker compatibility host, not as an implementation of
+the sonnetbox sandbox.
+
+## Porting checklist
+
+A new host is ready to claim sandbox compatibility only when it:
+
+1. validates the complete import/export shape and ABI version;
+2. exposes empty WASI arguments and environment, no preopens or network, and
+   no inherited streams;
+3. creates and discards a fresh instance for every outcome;
+4. validates and copies every guest memory range crossing a callback;
+5. enforces memory, stack, deterministic fuel, deadline, source, output,
+   import, capability, host-message, trace, and concurrency limits;
+6. reports its own stable fuel-model name; and
+7. passes `abi/v7/conformance.json` plus runtime-specific denial, malformed
+   ABI, exhaustion, cancellation, and concurrency tests.

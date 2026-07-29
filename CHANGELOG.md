@@ -10,6 +10,27 @@ API stability and is tied to the embedded go-jsonnet version.
 
 ## [Unreleased]
 
+### Added
+
+- ABI 7 is a public, versioned host contract with a machine-readable manifest,
+  release `sonnetbox.wasm` and checksum artifacts, and GitHub build-provenance
+  attestation.
+- `guest.Bytes` and `guest.SHA256` expose defensive access to the canonical
+  checked-in guest from Go.
+- `rust/sonnetbox-wasmtime` is a Rust 1.94 reference host with default-deny
+  WASI, fresh instances, Wasmtime fuel and epoch deadlines, memory and stack
+  ceilings, virtual imports, pure native capabilities, bounded traces, and
+  all three manifestation modes.
+- `abi/v7/conformance.json` drives the same import, capability, trace, file,
+  anonymous, multi-file, and stream cases through the Go and Rust hosts.
+
+### Changed
+
+- `EvaluationStats` reports the stable runtime-specific fuel model. The Go
+  host uses `wazero-fuel-v1`; the Rust host uses `wasmtime-fuel-v1`.
+- The local suite and GitHub Actions validate Rust formatting, Clippy, tests,
+  and cross-runtime conformance with the exact `.rust-version` toolchain.
+
 ## [0.3.0] - 2026-07-26
 
 This release is about adoption for existing go-jsonnet users. The headline is

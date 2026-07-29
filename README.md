@@ -25,13 +25,14 @@ workflow while adding contexts and an explicit sandbox boundary.
 
 The primary host API is for Go, and the `sonnetbox` command provides a secure,
 intentionally bounded subset of the `jsonnet` CLI workflow. It is not a
-drop-in replacement. Other language hosts can embed the released guest through
-the [portable host ABI](docs/abi.md); they must reproduce the host-side policy,
-not merely instantiate the module. C++/libjsonnet applications can also use the
-CLI, a Go service, or a sidecar boundary; there is not yet a C ABI.
+drop-in replacement. A Rust/Wasmtime reference host proves the released guest
+on a second engine. Other language hosts can use the same
+[portable host ABI](docs/abi.md); they must reproduce the host-side policy,
+not merely instantiate the module. C++/libjsonnet applications can also use
+the CLI, a Go service, or a sidecar boundary; there is not yet a C ABI.
 
-The module requires Go 1.25.12 or newer. It uses no Cgo, C++, Wasmtime, shared
-libraries, or go-jsonnet's browser-only `js/wasm` artifact.
+The Go module requires Go 1.25.12 or newer. It uses no Cgo, C++, Wasmtime,
+shared libraries, or go-jsonnet's browser-only `js/wasm` artifact.
 
 ## Quick start
 
@@ -109,6 +110,41 @@ request-serving integration, see the [examples](examples/README.md).
 For a current go-jsonnet codebase, see [MIGRATING.md](MIGRATING.md) for the
 compatibility contract, before-and-after code, supported API matrix, and
 rollout checklist.
+
+## Rust and other runtimes
+
+[`rust/sonnetbox-wasmtime`](rust/sonnetbox-wasmtime) is the second reference
+host. It loads the same release `sonnetbox.wasm`, validates ABI 7, and
+recreates the Go host's default-deny WASI environment, fresh-instance
+lifecycle, import and capability boundary, resource ceilings, deterministic
+fuel, and wall-clock interruption under Wasmtime.
+
+```rust,no_run
+use std::time::Duration;
+use sonnetbox_wasmtime::{Engine, EngineConfig, Request};
+
+let guest = std::fs::read("sonnetbox.wasm")?;
+let engine = Engine::new(&guest, EngineConfig::default())?;
+let result = engine.evaluate(
+    Request {
+        source: "{ answer: 6 * 7 }".into(),
+        ..Request::default()
+    },
+    Duration::from_secs(2),
+)?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+The Rust crate is repository-hosted rather than published to crates.io for
+now. Applications should pin a tagged release guest and verify its checksum
+or attestation. The Go and Rust hosts execute the same versioned cases in
+[`abi/v7/conformance.json`](abi/v7/conformance.json).
+
+Fuel budgets are engine-specific: Go reports `wazero-fuel-v1`, while Rust
+reports `wasmtime-fuel-v1`. Never copy a numeric fuel policy from one model to
+the other. The ABI, manifest, shared cases, and Rust host form the starting
+kit for another runtime; [docs/abi.md](docs/abi.md) lists the required
+lifecycle and sandbox invariants.
 
 ## Command-line usage
 
@@ -472,11 +508,11 @@ The build uses `CGO_ENABLED=0`, `GOOS=wasip1`, `GOARCH=wasm`,
 `-buildmode=c-shared`, `-trimpath`, and a cleared build ID. CI rebuilds the
 module and verifies its bytes and checked-in SHA-256 checksum.
 
-Run `make check` for formatting, module, lint, coverage, portability, and WASM
-reproducibility checks. `make race` and `make fuzz-smoke` provide the extended
-checks. `make conformance` compares against the pinned upstream Jsonnet suite,
-and `make bench` reports the performance figures published in
-[MIGRATING.md](MIGRATING.md).
+Run `make check` for Go and Rust formatting, module metadata, lint, tests,
+coverage, portability, and WASM reproducibility checks. `make race` and
+`make fuzz-smoke` provide the extended Go checks. `make conformance` compares
+against the pinned upstream Jsonnet suite, and `make bench` reports the
+performance figures published in [MIGRATING.md](MIGRATING.md).
 
 See [CHANGELOG.md](CHANGELOG.md) for release notes,
 [CONTRIBUTING.md](CONTRIBUTING.md) for the local workflow, and
