@@ -17,8 +17,9 @@ JSONNET_SUITE_REF ?= 5aec27e03a61dae06461becb95089b15fe217233
 JSONNET_SUITE_CACHE := $(BUILD_DIR)/conformance/jsonnet-$(JSONNET_SUITE_REF)
 JSONNET_SUITE_DIR ?= $(JSONNET_SUITE_CACHE)/test_suite
 COVERAGE_PROFILE := $(BUILD_DIR)/coverage.out
-WASM := internal/guestblob/sonnetbox.wasm
-WASM_CHECKSUM := internal/guestblob/sonnetbox.wasm.sha256
+WASM_DIR := guest
+WASM := $(WASM_DIR)/sonnetbox.wasm
+WASM_CHECKSUM := $(WASM_DIR)/sonnetbox.wasm.sha256
 GUEST := ./cmd/sonnetbox-guest
 WASM_FLAGS := -trimpath -buildvcs=false -ldflags=-buildid= -buildmode=c-shared
 IMAGE ?= ghcr.io/thevilledev/sonnetbox
@@ -130,7 +131,7 @@ wasm:
 	CGO_ENABLED=0 GOOS=wasip1 GOARCH=wasm GOTOOLCHAIN=$(GO_TOOLCHAIN) \
 		$(GO) build $(WASM_FLAGS) -o "$$tmp" $(GUEST); \
 	mv "$$tmp" $(WASM); \
-	shasum -a 256 $(WASM) > $(WASM_CHECKSUM)
+	cd $(WASM_DIR) && shasum -a 256 sonnetbox.wasm > sonnetbox.wasm.sha256
 
 wasm-check:
 	@set -eu; \
@@ -139,7 +140,7 @@ wasm-check:
 	CGO_ENABLED=0 GOOS=wasip1 GOARCH=wasm GOTOOLCHAIN=$(GO_TOOLCHAIN) \
 		$(GO) build $(WASM_FLAGS) -o "$$tmp" $(GUEST); \
 	cmp -s "$$tmp" $(WASM) || { echo "embedded WASM is stale"; exit 1; }; \
-	shasum -a 256 -c $(WASM_CHECKSUM)
+	cd $(WASM_DIR) && shasum -a 256 -c sonnetbox.wasm.sha256
 
 no-cgo:
 	CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) test -run='^$$' -count=1 \

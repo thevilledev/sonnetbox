@@ -16,7 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/thevilledev/sonnetbox/internal/guestblob"
+	"github.com/thevilledev/sonnetbox/guest"
 	"github.com/thevilledev/sonnetbox/internal/protocol"
 	"github.com/thevilledev/wazero"
 	"github.com/thevilledev/wazero/api"
@@ -222,7 +222,7 @@ func newEngine(
 	if err := e.instantiateHostModule(ctx); err != nil {
 		return nil, &ABIError{Err: fmt.Errorf("instantiate host ABI: %w", err)}
 	}
-	compiled, err := r.CompileModule(ctx, guestblob.Module)
+	compiled, err := r.CompileModule(ctx, guest.Bytes())
 	if err != nil {
 		return nil, &ABIError{Err: fmt.Errorf("compile embedded guest: %w", err)}
 	}

@@ -1,0 +1,6 @@
+{
+  "kind": "output bytes",
+  "message": "output byte limit exceeded",
+  "limit": 1024,
+  "actual": 2048
+}

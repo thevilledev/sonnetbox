@@ -1,4 +1,5 @@
-// Package protocol defines the private host-to-guest wire protocol.
+// Package protocol implements the host-to-guest wire protocol documented in
+// docs/abi.md.
 package protocol
 
 import (

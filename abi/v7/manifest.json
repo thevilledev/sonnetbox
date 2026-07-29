@@ -1,0 +1,48 @@
+{
+  "abi_version": 7,
+  "jsonnet_version": "v0.22.0",
+  "artifact": {
+    "path": "guest/sonnetbox.wasm",
+    "sha256": "3733cb0a31a0b7608e2660298f391bf9d95b2caa9daf55038f1a727fba017bcb",
+    "size": 7742150
+  },
+  "wasi_module": "wasi_snapshot_preview1",
+  "host_import": {
+    "module": "sonnetbox_host",
+    "name": "call",
+    "params": ["i32", "i32", "i32", "i32", "i32"],
+    "results": ["i64"]
+  },
+  "exports": {
+    "_initialize": {"params": [], "results": []},
+    "sonnetbox_abi_version": {"params": [], "results": ["i32"]},
+    "sonnetbox_request_alloc": {"params": ["i32"], "results": ["i32"]},
+    "sonnetbox_evaluate": {"params": [], "results": ["i32"]},
+    "sonnetbox_result_ptr": {"params": [], "results": ["i32"]},
+    "sonnetbox_result_len": {"params": [], "results": ["i32"]},
+    "sonnetbox_trace_ptr": {"params": [], "results": ["i32"]},
+    "sonnetbox_trace_len": {"params": [], "results": ["i32"]},
+    "sonnetbox_trace_truncated": {"params": [], "results": ["i32"]}
+  },
+  "operations": {
+    "resolve_import": 1,
+    "call_capability": 2
+  },
+  "evaluation_status": {
+    "ok": 0,
+    "invalid_request": 1,
+    "jsonnet_error": 2,
+    "host_error": 3,
+    "limit": 4,
+    "internal": 5
+  },
+  "host_status": {
+    "ok": 0,
+    "denied": 1,
+    "handler_failure": 2,
+    "limit": 3,
+    "canceled": 4,
+    "malformed": 5
+  },
+  "fuel": "host-defined"
+}

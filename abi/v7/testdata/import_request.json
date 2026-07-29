@@ -1,0 +1,4 @@
+{
+  "from": "apps/main.jsonnet",
+  "path": "../lib/product.libsonnet"
+}

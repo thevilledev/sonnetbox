@@ -53,6 +53,9 @@ changelog:
 
 release:
   prerelease: auto
+  extra_files:
+    - glob: ./guest/sonnetbox.wasm
+    - glob: ./guest/sonnetbox.wasm.sha256
   footer: |
     See [CHANGELOG.md](https://github.com/thevilledev/sonnetbox/blob/{{ .Tag }}/CHANGELOG.md)
     for the curated notes behind these commits.

@@ -23,10 +23,12 @@ Use the core API for new integrations. Existing go-jsonnet applications can
 start with the opt-in `compat/gojsonnet` package, which keeps the familiar VM
 workflow while adding contexts and an explicit sandbox boundary.
 
-The host API is for Go, and the `sonnetbox` command provides a secure,
+The primary host API is for Go, and the `sonnetbox` command provides a secure,
 intentionally bounded subset of the `jsonnet` CLI workflow. It is not a
-drop-in replacement. C++/libjsonnet applications still need the CLI, a Go
-service, or a sidecar boundary; there is not yet a C ABI.
+drop-in replacement. Other language hosts can embed the released guest through
+the [portable host ABI](docs/abi.md); they must reproduce the host-side policy,
+not merely instantiate the module. C++/libjsonnet applications can also use the
+CLI, a Go service, or a sidecar boundary; there is not yet a C ABI.
 
 The module requires Go 1.25.12 or newer. It uses no Cgo, C++, Wasmtime, shared
 libraries, or go-jsonnet's browser-only `js/wasm` artifact.
@@ -384,8 +386,9 @@ warn level. Events carry paths, sizes, counts, and outcomes but never imported
 content or capability arguments, so an audit log cannot become a copy of the
 data crossing the sandbox.
 
-`Version()` reports the embedded go-jsonnet version and the private
-host/guest ABI version, which is useful in logs and compatibility reports.
+`Version()` reports the embedded go-jsonnet version and host/guest ABI version,
+which is useful in logs and compatibility reports. Package `guest` exposes a
+defensive copy of the same Wasm module attached to tagged releases.
 
 ## Compatibility contract
 
@@ -444,7 +447,7 @@ idempotent, rejects new work, and aborts active guest calls.
 
 ## ABI
 
-The embedded guest uses private ABI version 7. The host sends one bounded
+The embedded guest uses public ABI version 7. The host sends one bounded
 evaluation request to guest-owned memory. Guest-to-host calls use one imported
 function for import resolution and capability invocation. Status values
 distinguish success, denial, handler failure, limits, cancellation, and
@@ -452,8 +455,9 @@ malformed messages.
 
 The guest exposes bounded result and trace buffers. Host callbacks copy
 requests before invoking trusted handlers, validate complete memory ranges,
-and never retain guest-memory views. The ABI is an internal implementation
-detail and is not a public extension point.
+and never retain guest-memory views. [docs/abi.md](docs/abi.md) is the
+language-neutral contract, with a machine-readable manifest and example
+messages under `abi/v7`.
 
 ## Rebuilding and development
 

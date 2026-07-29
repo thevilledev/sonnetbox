@@ -36,8 +36,8 @@ stale artifact and is not a substitute for `make wasm`.
 If rebuilding changes the guest, include both of these generated files in the
 same commit as the source change:
 
-- `internal/guestblob/sonnetbox.wasm`
-- `internal/guestblob/sonnetbox.wasm.sha256`
+- `guest/sonnetbox.wasm`
+- `guest/sonnetbox.wasm.sha256`
 
 Never commit a Go code or dependency change until `make wasm` has run and the
 resulting blob and checksum have been inspected.

@@ -201,10 +201,10 @@ type Result struct {
 	Stats EvaluationStats
 }
 
-// VersionInfo identifies the evaluator and private host/guest ABI.
+// VersionInfo identifies the evaluator and host/guest ABI.
 type VersionInfo struct {
 	// Jsonnet is the embedded go-jsonnet semantic version.
 	Jsonnet string
-	// ABI is the private sonnetbox host/guest protocol version.
+	// ABI is the sonnetbox host/guest protocol version.
 	ABI uint32
 }

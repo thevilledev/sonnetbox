@@ -1,0 +1,23 @@
+{
+  "filename": "apps/main.jsonnet",
+  "source": "local product = std.native(\"lookup_product\")(\"starter\"); { product: product, region: std.extVar(\"region\") }",
+  "input_mode": 0,
+  "output_mode": 0,
+  "ext_vars": {
+    "region": "eu-north"
+  },
+  "capabilities": {
+    "lookup_product": {
+      "params": ["sku"]
+    }
+  },
+  "output_newline": true,
+  "capture_trace": true,
+  "limits": {
+    "max_output_bytes": 1048576,
+    "max_stack": 256,
+    "max_host_request_bytes": 524288,
+    "max_host_response_bytes": 524288,
+    "max_trace_bytes": 65536
+  }
+}
