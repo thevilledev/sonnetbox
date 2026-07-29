@@ -1,0 +1,19 @@
+[workspace]
+members = ["rust/sonnetbox-wasmtime"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/thevilledev/sonnetbox"
+rust-version = "1.94.0"
+version = "0.1.0"
+
+[workspace.dependencies]
+anyhow = "1.0.102"
+base64 = "0.22.1"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+thiserror = "2.0.18"
+wasmtime = "46.0.1"
+wasmtime-wasi = "46.0.1"
