@@ -6,6 +6,7 @@ These instructions apply to the entire repository.
 
 - `go.mod` declares the minimum supported Go patch release.
 - `.go-version` declares the current development and WASM build toolchain.
+- `.rust-version` declares the Wasmtime reference-host toolchain.
 - These versions may differ intentionally. Do not replace either one with a
   minor-version wildcard.
 - The `test-minimum` job in `.github/workflows/ci.yml` must pin the exact
@@ -16,6 +17,10 @@ These instructions apply to the entire repository.
 Whenever either Go version changes, inspect `go.mod`, `.go-version`, the
 `test-minimum` workflow job, the Dockerfile `GO_VERSION` default, and the
 WASM build configuration together.
+
+When the Rust version or Wasmtime dependencies change, inspect
+`.rust-version`, `Cargo.toml`, `Cargo.lock`, and the `rust-host` workflow job
+together. Keep the Rust toolchain exact.
 
 ## Rebuild the embedded WASM first
 
@@ -83,6 +88,9 @@ locally.
 Documentation-only changes may use proportionate local validation, but any
 edit to workflow commands, documented versions, compatibility guarantees, or
 release instructions must follow the full validation above.
+
+Rust host changes must also pass `make rust-check`. Shared ABI behavior belongs
+in `abi/v7/conformance.json` and must be exercised by both reference hosts.
 
 ## Commits
 

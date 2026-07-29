@@ -76,6 +76,28 @@ jobs:
       - name: Run tests with coverage floor
         run: make coverage
 
+  rust-host:
+    name: Rust / Wasmtime host
+    runs-on: avrea-ubuntu-latest-2-vcpu
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up exact Rust toolchain
+        run: |
+          rust_version="$(tr -d '[:space:]' < .rust-version)"
+          rustup toolchain install "${rust_version}" \
+            --profile minimal \
+            --component clippy,rustfmt \
+            --no-self-update
+          rustup default "${rust_version}"
+      - name: Validate Wasmtime host and shared conformance
+        run: make rust-check
+
   jsonnet-conformance:
     name: Jsonnet conformance
     runs-on: avrea-ubuntu-latest-2-vcpu

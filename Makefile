@@ -1,5 +1,6 @@
 GO ?= go
 GOLANGCI_LINT ?= golangci-lint
+CARGO ?= cargo
 GO_VERSION := $(strip $(shell sed -n '1p' .go-version))
 GO_TOOLCHAIN ?= go$(GO_VERSION)
 TEST_TIMEOUT ?= 5m
@@ -27,7 +28,8 @@ VERSION ?= dev
 DOCKER ?= docker
 
 .PHONY: bench cli conformance conformance-suite docker fmt fmt-check lint \
-	mod-check test coverage race fuzz fuzz-smoke no-cgo wasm wasm-check check ci
+	mod-check test coverage race fuzz fuzz-smoke no-cgo wasm wasm-check \
+	rust-fmt-check rust-lint rust-test rust-check check ci
 
 bench:
 	CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) test -run='^$$' -bench=. \
@@ -146,6 +148,17 @@ no-cgo:
 	CGO_ENABLED=0 GOTOOLCHAIN=local $(GO) test -run='^$$' -count=1 \
 		-timeout=$(TEST_TIMEOUT) ./...
 
-check: fmt-check mod-check lint coverage no-cgo wasm-check
+rust-fmt-check:
+	$(CARGO) fmt --all -- --check
+
+rust-lint:
+	$(CARGO) clippy --workspace --all-targets --locked -- -D warnings
+
+rust-test:
+	$(CARGO) test --workspace --locked
+
+rust-check: rust-fmt-check rust-lint rust-test
+
+check: fmt-check mod-check lint coverage no-cgo wasm-check rust-check
 
 ci: check race fuzz-smoke
