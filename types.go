@@ -161,6 +161,9 @@ type EvaluationStats struct {
 	ExecutionDuration time.Duration
 	// FuelConsumed is the deterministic WebAssembly instruction work used.
 	FuelConsumed uint64
+	// FuelModel names the runtime-specific instruction cost schedule. Fuel
+	// limits and measurements are comparable only when this value matches.
+	FuelModel string
 	// ImportResolutions is the number of import requests made by the guest.
 	ImportResolutions uint32
 	// ImportBytes is the cumulative size of imported content.

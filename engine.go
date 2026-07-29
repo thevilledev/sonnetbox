@@ -28,6 +28,7 @@ const (
 	wasmPageSize        = uint64(65536)
 	minHostResponseSize = uint32(256)
 	jsonnetVersion      = "v0.22.0"
+	fuelModel           = "wazero-fuel-v1"
 )
 
 var identifierPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -1638,6 +1639,7 @@ func (s *invocationState) stats(
 		QueueDuration:     queueDuration,
 		ExecutionDuration: executionDuration,
 		FuelConsumed:      fuelConsumed,
+		FuelModel:         fuelModel,
 		ImportResolutions: s.importCalls,
 		ImportBytes:       s.importBytes,
 		CapabilityCalls:   s.capabilityCalls,

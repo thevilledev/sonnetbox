@@ -110,7 +110,7 @@ func TestPublicABIVectorsDecodeStrictly(t *testing.T) {
 
 func readABITestFile(t *testing.T, name string) []byte {
 	t.Helper()
-	raw, err := os.ReadFile(name)
+	raw, err := os.ReadFile(name) //nolint:gosec // Callers supply only repository-owned ABI fixture paths.
 	if err != nil {
 		t.Fatal(err)
 	}

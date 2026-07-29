@@ -1,0 +1,112 @@
+{
+  "cases": [
+    {
+      "name": "host callbacks, external variables, and trace",
+      "input_mode": "snippet",
+      "request": {
+        "filename": "apps/main.jsonnet",
+        "source": "local product = std.native(\"lookup_product\")(\"starter\"); local value = import \"../lib/value.libsonnet\"; std.trace(\"portable trace\", { product: product, region: std.extVar(\"region\"), value: value })",
+        "ext_vars": {
+          "region": "eu-north"
+        },
+        "capture_trace": true
+      },
+      "imports": {
+        "lib/value.libsonnet": "21"
+      },
+      "capabilities": {
+        "lookup_product": {
+          "params": ["sku"],
+          "args": ["starter"],
+          "result": {
+            "name": "Starter",
+            "monthly_price": 9
+          }
+        }
+      },
+      "expected": {
+        "output": {
+          "product": {
+            "name": "Starter",
+            "monthly_price": 9
+          },
+          "region": "eu-north",
+          "value": 21
+        },
+        "imports": ["lib/value.libsonnet"],
+        "trace_contains": "portable trace"
+      }
+    },
+    {
+      "name": "multi-file output",
+      "input_mode": "snippet",
+      "request": {
+        "source": "{ [\"a.json\"]: { value: 1 }, [\"b.json\"]: { value: 2 } }",
+        "output_mode": "multi"
+      },
+      "expected": {
+        "files": {
+          "a.json": {
+            "value": 1
+          },
+          "b.json": {
+            "value": 2
+          }
+        }
+      }
+    },
+    {
+      "name": "stream output",
+      "input_mode": "snippet",
+      "request": {
+        "source": "[{ value: 1 }, { value: 2 }]",
+        "output_mode": "stream"
+      },
+      "expected": {
+        "documents": [
+          {
+            "value": 1
+          },
+          {
+            "value": 2
+          }
+        ]
+      }
+    },
+    {
+      "name": "file input and nested import",
+      "input_mode": "file",
+      "request": {
+        "filename": "apps/main.jsonnet"
+      },
+      "imports": {
+        "apps/main.jsonnet": "import \"../lib/value.libsonnet\"",
+        "lib/value.libsonnet": "{ answer: 42 }"
+      },
+      "expected": {
+        "output": {
+          "answer": 42
+        },
+        "imports": [
+          "apps/main.jsonnet",
+          "lib/value.libsonnet"
+        ]
+      }
+    },
+    {
+      "name": "anonymous input resolves imports from root",
+      "input_mode": "anonymous",
+      "request": {
+        "filename": "diagnostics/name.jsonnet",
+        "source": "import \"lib/value.libsonnet\""
+      },
+      "imports": {
+        "lib/value.libsonnet": "\"root value\""
+      },
+      "expected": {
+        "output": "root value",
+        "imports": ["lib/value.libsonnet"]
+      }
+    }
+  ]
+}

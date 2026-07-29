@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use serde::Deserialize;
 use serde_json::{Value, json};
 use sonnetbox_wasmtime::{
     Capability, Engine, EngineConfig, Error, FUEL_MODEL, MapImporter, OutputMode, Request,
@@ -9,6 +10,7 @@ use sonnetbox_wasmtime::{
 };
 
 const GUEST: &[u8] = include_bytes!("../../../guest/sonnetbox.wasm");
+const SHARED_CONFORMANCE: &str = include_str!("../../../abi/v7/conformance.json");
 const TIMEOUT: Duration = Duration::from_secs(10);
 
 fn engine() -> &'static Engine {
@@ -237,4 +239,163 @@ fn epoch_deadline_interrupts_guest_execution() {
         )
         .expect_err("deadline must interrupt execution");
     assert!(matches!(error, Error::Canceled), "{error:?}");
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SharedSuite {
+    cases: Vec<SharedCase>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SharedCase {
+    name: String,
+    input_mode: String,
+    request: SharedRequest,
+    #[serde(default)]
+    imports: BTreeMap<String, String>,
+    #[serde(default)]
+    capabilities: BTreeMap<String, SharedCapability>,
+    expected: SharedExpected,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct SharedRequest {
+    filename: String,
+    source: String,
+    ext_vars: BTreeMap<String, String>,
+    output_mode: String,
+    capture_trace: bool,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SharedCapability {
+    params: Vec<String>,
+    args: Vec<Value>,
+    result: Value,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct SharedExpected {
+    output: Option<Value>,
+    files: Option<BTreeMap<String, Value>>,
+    documents: Option<Vec<Value>>,
+    imports: Vec<String>,
+    trace_contains: String,
+}
+
+#[test]
+fn runs_shared_go_and_rust_conformance_cases() {
+    let suite: SharedSuite =
+        serde_json::from_str(SHARED_CONFORMANCE).expect("decode shared conformance suite");
+    assert!(!suite.cases.is_empty());
+
+    for test_case in suite.cases {
+        let importer = if test_case.imports.is_empty() {
+            None
+        } else {
+            let files = test_case
+                .imports
+                .into_iter()
+                .map(|(name, content)| (name, content.into_bytes()))
+                .collect();
+            Some(
+                Arc::new(MapImporter::new(files).expect("shared map importer"))
+                    as Arc<dyn sonnetbox_wasmtime::Importer>,
+            )
+        };
+        let capabilities = test_case
+            .capabilities
+            .into_iter()
+            .map(|(name, declaration)| {
+                let expected_args = declaration.args;
+                let result = declaration.result;
+                (
+                    name,
+                    Capability::new(declaration.params, move |_context, arguments| {
+                        if arguments != expected_args {
+                            return Err(format!(
+                                "arguments {arguments:?} do not match fixture {expected_args:?}"
+                            ));
+                        }
+                        Ok(result.clone())
+                    }),
+                )
+            })
+            .collect();
+        let output_mode = match test_case.request.output_mode.as_str() {
+            "" | "single" => OutputMode::Single,
+            "multi" => OutputMode::Multi,
+            "stream" => OutputMode::Stream,
+            mode => panic!("unknown shared output mode {mode:?}"),
+        };
+        let request = Request {
+            filename: test_case.request.filename.clone(),
+            source: test_case.request.source,
+            ext_vars: test_case.request.ext_vars,
+            importer,
+            capabilities,
+            output_mode,
+            capture_trace: test_case.request.capture_trace,
+            ..Request::default()
+        };
+        let result = match test_case.input_mode.as_str() {
+            "snippet" => engine().evaluate(request, TIMEOUT),
+            "anonymous" => engine().evaluate_anonymous(request, TIMEOUT),
+            "file" => engine().evaluate_file(test_case.request.filename, request, TIMEOUT),
+            mode => panic!("unknown shared input mode {mode:?}"),
+        }
+        .unwrap_or_else(|error| panic!("shared case {:?}: {error}", test_case.name));
+
+        if let Some(expected) = test_case.expected.output {
+            assert_eq!(
+                json_output(&result.output),
+                expected,
+                "shared case {:?}",
+                test_case.name
+            );
+        }
+        if let Some(expected_files) = test_case.expected.files {
+            let files = result.files.expect("shared multi-file output");
+            assert_eq!(files.len(), expected_files.len());
+            for (name, expected) in expected_files {
+                assert_eq!(
+                    json_output(&files[&name]),
+                    expected,
+                    "shared case {:?} file {name:?}",
+                    test_case.name
+                );
+            }
+        }
+        if let Some(expected_documents) = test_case.expected.documents {
+            let documents = result.documents.expect("shared stream output");
+            assert_eq!(documents.len(), expected_documents.len());
+            for (index, expected) in expected_documents.into_iter().enumerate() {
+                assert_eq!(
+                    json_output(&documents[index]),
+                    expected,
+                    "shared case {:?} document {index}",
+                    test_case.name
+                );
+            }
+        }
+        assert_eq!(
+            result.imports, test_case.expected.imports,
+            "shared case {:?}",
+            test_case.name
+        );
+        if !test_case.expected.trace_contains.is_empty() {
+            assert!(
+                String::from_utf8_lossy(&result.trace).contains(&test_case.expected.trace_contains),
+                "shared case {:?} trace {:?}",
+                test_case.name,
+                result.trace
+            );
+        }
+        assert!(result.stats.fuel_consumed > 0);
+    }
 }
