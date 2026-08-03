@@ -53,6 +53,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
+name = "base64"
+version = "0.23.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b25655df2c3cdd83c5e5b293b88acd880332b2ddadd7c30ac43144fdc0033da9"
+
+[[package]]
 name = "bitflags"
 version = "2.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1308,7 +1314,7 @@ name = "sonnetbox-wasmtime"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "base64",
+ "base64 0.23.0",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
@@ -1770,7 +1776,7 @@ version = "47.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b7c25436e1602aad2de80bfb3f586dcdfb6fe426d5b17cba37fabf9a1714d32"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "directories-next",
  "log",
  "postcard",
